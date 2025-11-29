@@ -1,0 +1,15 @@
+discord.py
+aiofiles
+aiohttp
+googletrans==4.0.0-rc1
+requests
+colorama
+plyer
+pystyle
+pyautogui
+Pillow
+tls-client
+spotipy
+pypresence
+pywin32
+pynacl
