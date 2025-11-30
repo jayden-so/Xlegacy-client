@@ -3134,7 +3134,7 @@ async def hypesquad(ctx, house: str):
 @bot.command()
 async def spotify(ctx):
     msg6 = await ctx.send("Loading.")
-    help_content6 = f"""
+    help_content6 = fr"""
 {red}Spotify Control System{reset}
 {light_red}[ {red}1{light_red} ] {black}spotify unpause          {light_red}[ {red}2{light_red} ] {black}spotify pause            
 {light_red}[ {red}3{light_red} ] {black}spotify next             {light_red}[ {red}4{light_red} ] {black}spotify prev              
@@ -3467,7 +3467,7 @@ async def pfpscrape(ctx, amount: int = None):
             failed_count += sum(1 for r in results if not r)
             
             progress = (i + len(chunk)) / len(selected_members) * 100
-            status = f"""```
+            status = fr"""```
 PFP Scraping / Status %
 Progress: {progress:.1f}%
 Downloaded: {success_count}
@@ -3482,7 +3482,7 @@ Path: {folder_path}
             
             await asyncio.sleep(random.uniform(0.5, 1.0))
 
-        final_status = f"""```
+        final_status = fr"""```
 Profile scraping completed:
 Scrapes Trird: {amount}
 Downloaded: {success_count}
@@ -3509,7 +3509,7 @@ rotation_tasks = {}
 @bot.command()
 async def ab(ctx):
     msg = await ctx.send("Loading.")
-    help_content = f"""
+    help_content = fr"""
 {red}Auto Bio & Profile Commands{reset}
 {light_red}[ {red}1{light_red} ] {black}setbio <text>          {light_red}[ {red}2{light_red} ] {black}rotatebio <texts>     
 {light_red}[ {red}3{light_red} ] {black}stoprotatebio         {light_red}[ {red}4{light_red} ] {black}setpronoun <text>     
@@ -3760,7 +3760,7 @@ def format_datetime(date_string):
         return "Invalid Date"
 
 def generate_page_1(user_info, premium_since, premium_type, connected_accounts):
-    output = f"""
+    output = fr"""
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
                                 {red}User Information for {white}{user_info['username']}
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
@@ -3776,7 +3776,7 @@ def generate_page_1(user_info, premium_since, premium_type, connected_accounts):
     return output
 
 def generate_page_2(mutual_friends):
-    output = f"""
+    output = fr"""
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
                                 {red}Mutual Friends
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}"""
@@ -3791,7 +3791,7 @@ def generate_page_2(mutual_friends):
     return output
 
 def generate_page_3(mutual_guilds):
-    output = f"""
+    output = fr"""
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
                                 {red}Mutual Guilds
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}"""
@@ -3806,7 +3806,7 @@ def generate_page_3(mutual_guilds):
     return output
 
 def generate_page_4(connected_accounts):
-    output = f"""
+    output = fr"""
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
                                 {red}Connected Accounts
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}"""
@@ -4078,7 +4078,7 @@ DISCORD_HEADERS = {
 @bot.command()
 async def account(ctx):
     msg = await ctx.send("Loading.")
-    help_content = f"""
+    help_content = fr"""
 {red}Account & Profile Commands{reset}
 {light_red}[ {red}1{light_red} ] {black}stealpfp <@user>       {light_red}[ {red}2{light_red} ] {black}stealbanner <@user>   
 {light_red}[ {red}3{light_red} ] {black}setname <name>        {light_red}[ {red}4{light_red} ] {black}copyprofile <@user>  
@@ -4314,7 +4314,7 @@ async def setbanner(ctx, url: str):
 @bot.command()
 async def vc(ctx):
     msg = await ctx.send(f"```ansi\n{red} XLEGACY | VC COMMANDS |  {reset}\n```")
-    help_content = f"""
+    help_content = fr"""
                 {black}─────────────────────────────────────XLEGACY─────────────────────────
                            {red} ──────────────────── XLEGACY |  MADE BY @unholxy {light_red} V.1 ────────────────────
                 {black}─────────────────────────────────────VC COMMANDS─────────────────────────{red}
@@ -4344,7 +4344,7 @@ async def vc(ctx):
 @bot.group(invoke_without_command=True)
 async def vcjoin(ctx):
     await ctx.send(f"```ansi\n{red} XLEGACY | VCJOIN COMMANDS |  {reset}\n```")
-    help_content = f"""
+    help_content = fr"""
 {red}Voice Channel Join Commands{reset}
 {light_red}[ {red}1{light_red} ] {black}vcjoin stable <channel_id> {light_red}[ {red}2{light_red} ] {black}vcjoin rotate        
 {light_red}[ {red}3{light_red} ] {black}vcjoin random              {light_red}[ {red}4{light_red} ] {black}vcjoin list            
@@ -4391,7 +4391,7 @@ async def vc_list(ctx):
 async def vc_status(ctx):
     voice_client = ctx.guild.voice_client
     if voice_client and voice_client.channel:
-        status_info = f"""
+        status_info = fr"""
 {red} VOICE CHANNEL STATUS {reset}
 {light_red}Connected to: {red}{voice_client.channel.name}{reset}
 {light_red}Channel ID: {red}{voice_client.channel.id}{reset}
@@ -4573,7 +4573,7 @@ async def rotateguild_delay(ctx, delay: float):
 @rotateguild.command(name="status")
 async def rotateguild_status(ctx):
     status = "RUNNING" if (guild_rotation_task and not guild_rotation_task.cancelled()) else "STOPPED"
-    status_info = f"""
+    status_info = fr"""
 {red} GUILD ROTATION STATUS {reset}
 {light_red}Status: {red}{status}{reset}
 {light_red}Delay: {red}{guild_rotation_delay}s{reset}
@@ -4628,7 +4628,7 @@ async def toggle(ctx):
 
 @dmsnipe.command()
 async def status(ctx):
-    status_info = f"""
+    status_info = fr"""
 {red} DM SNIPE CONFIGURATION {reset}
 {light_red}Enabled: {red}{config['enabled']}{reset}
 {light_red}Webhook Set: {red}{'YES' if config['webhook_url'] else 'NO'}{reset}
@@ -4665,7 +4665,7 @@ gctrap_enabled = False
 @bot.command()
 async def gctrap(ctx):
     msg = await ctx.send(f"```ansi\n{red} XLEGACY | GC TRAP COMMANDS |  {reset}\n```")
-    help_content = f"""
+    help_content = fr"""
                 {black}─────────────────────────────────────XLEGACY─────────────────────────
                            {red} ──────────────────── XLEGACY |  MADE BY @unholxy {light_red} V.1 ────────────────────
                 {black}─────────────────────────────────────GC TRAP─────────────────────────{red}
@@ -4702,7 +4702,7 @@ async def gctrapdisable(ctx):
 
 @bot.command()
 async def gctrapconfig(ctx):
-    config_info = f"""
+    config_info = fr"""
 {red} GC TRAP CONFIGURATION {reset}
 {light_red}GC Trap Status: {red}{'ENABLED' if gctrap_enabled else 'DISABLED'}{reset}
 {light_red}UGC Task: {red}{'RUNNING' if ugc_task else 'STOPPED'}{reset}
@@ -4864,7 +4864,7 @@ async def tleave(ctx, server_id: str = None):
                         else:
                             failed += 1
                         
-                        progress = f"""```ansi
+                        progress = fr"""```ansi
 {red} TOKEN SERVER LEAVE PROGRESS {reset}
 {light_red}Progress: {red}{i}/{len(selected_tokens)} {light_red}({red}{(i/len(selected_tokens)*100):.1f}%{light_red}){reset}
 {light_red}Success: {red}{success}{reset}
@@ -4900,7 +4900,7 @@ protection_groupchat = ["Protected GC", "Safe Zone", "Guarded Chat"]
 @bot.command()
 async def chatpack(ctx):
     msg = await ctx.send(f"```ansi\n{red} XLEGACY | CHATPACK COMMANDS |  {reset}\n```")
-    help_content = f"""
+    help_content = fr"""
                 {black}─────────────────────────────────────XLEGACY─────────────────────────
                            {red} ──────────────────── XLEGACY |  MADE BY @unholxy {light_red} V.1 ────────────────────
                 {black}─────────────────────────────────────CHATPACK─────────────────────────{red}
@@ -5692,7 +5692,7 @@ async def mreactoff(ctx):
 @bot.command()
 async def multi(ctx):
     """Display all multi-token commands"""
-    help_content = f"""
+    help_content = fr"""
 {red} MULTI-TOKEN COMMANDS {reset}
 {light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 
@@ -5751,7 +5751,7 @@ async def reset_cmd(ctx):
     import sys
     
     # Send reset message
-    reset_message = f"""```ansi
+    reset_message = fr"""```ansi
 {red}
  __   ___      ______ _____          _______     __
  \\ \\ / / |    |  ____/ ____|   /\\   / ____\\ \\   / /
@@ -5954,7 +5954,7 @@ async def theme(ctx, theme_name: str = None):
             current_indicator = " ← CURRENT" if theme_key == current_theme else ""
             theme_list.append(f"{theme_secondary}[ {theme_primary}{theme_key}{theme_secondary} ] {theme_accent}{theme_data['name']}{current_indicator}{reset}")
         
-        theme_message = f"""
+        theme_message = fr"""
 {theme_primary} AVAILABLE THEMES {reset}
 {theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 
@@ -5971,7 +5971,7 @@ async def theme(ctx, theme_name: str = None):
     
     if theme_name in themes:
         if update_theme(theme_name):
-            success_message = f"""
+            success_message = fr"""
 {theme_primary} THEME UPDATED {reset}
 {theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 
@@ -5992,7 +5992,7 @@ async def theme(ctx, theme_name: str = None):
 @bot.command()
 async def settings(ctx):
     """Display all settings and configuration commands"""
-    settings_content = f"""
+    settings_content = fr"""
 {theme_primary} SETTINGS & CONFIGURATION {reset}
 {theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 
@@ -6129,7 +6129,7 @@ async def prefix(ctx, new_prefix: str = None):
     
     if new_prefix is None:
         # Show current prefix and usage
-        prefix_info = f"""
+        prefix_info = fr"""
 {theme_primary} PREFIX SETTINGS {reset}
 {theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 
@@ -6177,7 +6177,7 @@ async def prefix(ctx, new_prefix: str = None):
         # Update bot command prefix
         bot.command_prefix = PREFIX
         
-        success_message = f"""
+        success_message = fr"""
 {theme_primary} PREFIX UPDATED {reset}
 {theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 
@@ -6211,7 +6211,7 @@ async def prefixreset(ctx):
     if save_prefix("."):
         bot.command_prefix = PREFIX
         
-        reset_message = f"""
+        reset_message = fr"""
 {theme_primary} PREFIX RESET {reset}
 {theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 
@@ -6300,7 +6300,7 @@ How many tokens do you want to use? (Type 'all' or enter a number)```""")
                             if resp1.status == 200 and resp2.status == 200:
                                 success += 1
                             
-                            progress = f"""```ansi
+                            progress = fr"""```ansi
 {theme_primary}Changing Statuses...{reset}
 Progress: {i}/{len(selected_tokens)} ({(i/len(selected_tokens)*100):.1f}%)
 Success: {success}
@@ -6371,7 +6371,7 @@ How many tokens do you want to reset? (Type 'all' or enter a number)```""")
                         if resp.status == 200:
                             success += 1
                         
-                        progress = f"""```ansi
+                        progress = fr"""```ansi
 {theme_primary}Resetting Statuses...{reset}
 Progress: {i}/{len(selected_tokens)} ({(i/len(selected_tokens)*100):.1f}%)
 Success: {success}```"""
@@ -6446,7 +6446,7 @@ async def tinfo(ctx, token_input: str):
                 created_at = datetime.fromtimestamp(((int(user_data['id']) >> 22) + 1420070400000) / 1000)
                 created_date = created_at.strftime('%Y-%m-%d %H:%M:%S')
 
-                info = f"""```ansi
+                info = fr"""```ansi
 {theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
                                 {theme_primary}Token Account Information{reset}
 
@@ -6558,7 +6558,7 @@ How many tokens do you want to use? (Type 'all' or enter a number)```""")
                                 success_count += 1
                     
                     # Update progress for this token
-                    progress = f"""```ansi
+                    progress = fr"""```ansi
 {theme_primary}Token Streaming Status{reset}
 Tokens: {len(selected_tokens)} | Statuses: {len(statuses)}
 Progress: Token {token_index + 1} - {current_status_index + 1}/{len(statuses)}
