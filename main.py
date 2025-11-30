@@ -135,8 +135,6 @@ dreact_users = {}
 autokill_messages = {}
 autokill_status = {}
 
-
-
 black = "\033[30m"
 red = "\033[31m"
 green = "\033[32m"
@@ -462,7 +460,7 @@ async def on_ready():
             started_count = 0
             for username, bot_info in hosted_bots.items():
                 try:
-                    bot_file_path = os.path.join(bot_info['folder'], "bot.py")
+                    bot_file_path = os.path.join(bot_info['folder'], "{safe_username}")
                     
                     if os.path.exists(bot_file_path):
                         if os.name == 'nt':  # Windows
@@ -6667,20 +6665,28 @@ async def tss(ctx):
         await ctx.send(f"```{theme_primary}Token Streaming Status: {active_tasks}/{len(tasks)} tokens active{reset}```")
     else:
         await ctx.send(f"```{theme_primary}No token streaming active{reset}```")
-       
+      
+
 @bot.command()
 async def hostton(ctx, token: str):
     """Host a token in a separate selfbot instance"""
     try:
         await ctx.message.delete()
         
+        # Validate token format
+        if not token or len(token) < 10:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Invalid token format | {reset}\n```")
+            return
+        
         current_dir = os.getcwd()
         xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
         
         # Create directory if it doesn't exist
-        os.makedirs(xlegacy_host_path, exist_ok=True)
-        
-        config_path = os.path.join(xlegacy_host_path, "config.json")
+        try:
+            os.makedirs(xlegacy_host_path, exist_ok=True)
+        except Exception as e:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot create directory: {str(e)} | {reset}\n```")
+            return
         
         # First, get the username from the token to name the file
         async def get_username(token):
@@ -6692,191 +6698,294 @@ async def hostton(ctx, token: str):
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
                         'https://discord.com/api/v9/users/@me',
-                        headers=headers
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=10)
                     ) as resp:
                         if resp.status == 200:
                             user_data = await resp.json()
-                            return user_data['username']
+                            return user_data.get('username', 'unknown')
                         else:
+                            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Token Error | Status: {resp.status} | {reset}\n```", delete_after=5)
                             return "unknown"
-            except:
+            except asyncio.TimeoutError:
+                await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Timeout | Token validation timed out | {reset}\n```", delete_after=5)
+                return "unknown"
+            except Exception as e:
+                await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Network Error | {str(e)} | {reset}\n```", delete_after=5)
                 return "unknown"
         
         # Get username for the file name
         username = await get_username(token)
+        if username == "unknown":
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot validate token | {reset}\n```")
+            return
+        
         safe_username = "".join(c for c in username if c.isalnum() or c in (' ', '-', '_')).rstrip()
         if not safe_username:
             safe_username = "hosted_bot"
         
-        bot_file_path = os.path.join(xlegacy_host_path, f"{safe_username}.py")
+        # Create user folder
+        user_folder = os.path.join(xlegacy_host_path, safe_username)
+        try:
+            os.makedirs(user_folder, exist_ok=True)
+        except Exception as e:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot create user folder: {str(e)} | {reset}\n```")
+            return
+        
+        config_path = os.path.join(user_folder, "config.json")
+        bot_file_path = os.path.join(user_folder, "bot.py")
         
         # Create config file with both TOKEN and token keys for compatibility
         config = {
             "token": token,
             "TOKEN": token  # Add uppercase version too
         }
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=4)
+        try:
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=4)
+        except Exception as e:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot write config: {str(e)} | {reset}\n```")
+            return
+        
+        # Store hosted bot info for auto-start
+        hosted_bots_file = os.path.join(xlegacy_host_path, "hosted_bots.json")
+        hosted_bots = {}
+        if os.path.exists(hosted_bots_file):
+            try:
+                with open(hosted_bots_file, 'r', encoding='utf-8') as f:
+                    hosted_bots = json.load(f)
+            except Exception as e:
+                await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Warning | Cannot read hosted_bots.json: {str(e)} | {reset}\n```", delete_after=5)
+        
+        # Add this bot to hosted bots list
+        import time
+        hosted_bots[safe_username] = {
+            "username": username,
+            "folder": user_folder,
+            "token": token,
+            "added_time": time.time()
+        }
+        
+        # Save hosted bots list
+        try:
+            with open(hosted_bots_file, 'w', encoding='utf-8') as f:
+                json.dump(hosted_bots, f, indent=4)
+        except Exception as e:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Warning | Cannot save hosted_bots.json: {str(e)} | {reset}\n```", delete_after=5)
         
         # Load bot code from GitHub and modify it for hosted environment
         async def download_and_modify_bot_code():
             github_url = "https://raw.githubusercontent.com/jayden-so/Xlegacy-client/refs/heads/main/main.py"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(github_url) as response:
-                    if response.status == 200:
-                        content = await response.text()
-                        
-                        # MODIFY THE DOWNLOADED CODE FOR HOSTED ENVIRONMENT
-                        # Add path fixing and cleanup at the very beginning
-                        path_fix_code = '''
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(github_url, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                        if response.status == 200:
+                            content = await response.text()
+                            
+                            # MODIFY THE DOWNLOADED CODE FOR HOSTED ENVIRONMENT
+                            path_fix_code = f'''
 import os
 import sys
-import atexit
-import shutil
 
 # FIX PATHS FOR HOSTED ENVIRONMENT
 current_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(current_dir)
 sys.path.insert(0, current_dir)
 
-# CLEANUP FUNCTION TO DELETE FOLDER ON EXIT
-def cleanup_on_exit():
-    try:
-        # Wait a moment to ensure everything is closed
-        import time
-        time.sleep(1)
-        
-        # Get the directory containing this script
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        parent_dir = os.path.dirname(script_dir)
-        host_folder = "Xlegacy_host"
-        full_host_path = os.path.join(parent_dir, host_folder)
-        
-        # Check if we're in the Xlegacy_host folder
-        if os.path.basename(script_dir) == host_folder:
-            # Delete the entire host folder
-            if os.path.exists(full_host_path):
-                shutil.rmtree(full_host_path, ignore_errors=True)
-                print(f"Cleaned up host folder: {full_host_path}")
-    except Exception as e:
-        print(f"Cleanup error: {e}")
-
-# Register cleanup function
-atexit.register(cleanup_on_exit)
+# User folder for identification
+USER_FOLDER = f"Xlegacy_host/{safe_username}"
+USER_FOLDER = "{user_folder}"
 
 '''
-                        
-                        # Find where the imports start and insert our path fix
-                        lines = content.split('\n')
-                        new_lines = []
-                        
-                        # Add our path fix after the imports begin
-                        imports_added = False
-                        for i, line in enumerate(lines):
-                            new_lines.append(line)
-                            # Look for the first import or the main code section
-                            if (line.startswith('import ') or line.startswith('from ')) and not imports_added:
-                                # Add our path fixing code after the first import block
-                                if i + 1 < len(lines) and (not lines[i + 1].startswith('import ') and not lines[i + 1].startswith('from ')):
-                                    new_lines.append(path_fix_code.strip())
-                                    imports_added = True
-                        
-                        # If we didn't find a good spot, add it after the first few lines
-                        if not imports_added and len(new_lines) > 3:
-                            new_lines.insert(3, path_fix_code.strip())
-                        
-                        modified_content = '\n'.join(new_lines)
-                        
-                        # FIX THE TOKEN LOADING - Handle both 'token' and 'TOKEN'
-                        modified_content = modified_content.replace(
-                            "token = config['TOKEN']",
-                            "token = config.get('TOKEN') or config.get('token')"
-                        )
-                        
-                        modified_content = modified_content.replace(
-                            'token = config["TOKEN"]',
-                            'token = config.get("TOKEN") or config.get("token")'
-                        )
-                        
-                        # Also add a fallback for any other token access patterns
-                        modified_content = modified_content.replace(
-                            "config['TOKEN']",
-                            "config.get('TOKEN', config.get('token', ''))"
-                        )
-                        
-                        modified_content = modified_content.replace(
-                            'config["TOKEN"]',
-                            'config.get("TOKEN", config.get("token", ""))'
-                        )
-                        
-                        # Add error handling for file operations
-                        modified_content = modified_content.replace(
-                            'with open(config_path, \'r\') as f:',
-                            'with open(config_path, \'r\', encoding=\'utf-8\') as f:'
-                        )
-                        
-                        # Modify the stop command to include cleanup
-                        if '@bot.command()' in modified_content and 'async def stop(' in modified_content:
-                            # Find and replace the stop command
-                            import re
-                            stop_pattern = r'(@bot\.command\(\)\s*async def stop\(ctx\):.*?await bot\.close\(\))'
-                            new_stop_command = '''@bot.command()
-async def stop(ctx):
-    """Stop the hosted instance and clean up files"""
-    await ctx.send("Stopping hosted instance and cleaning up...")
-    # Trigger cleanup before closing
-    import shutil
-    import os
-    try:
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        if os.path.exists(current_dir):
-            # Schedule cleanup after bot closes
-            import asyncio
-            asyncio.create_task(final_cleanup(current_dir))
-    except Exception as e:
-        print(f"Cleanup setup error: {e}")
-    await bot.close()
-
-async def final_cleanup(folder_path):
-    """Perform final cleanup after bot closes"""
-    await asyncio.sleep(2)  # Wait for bot to fully close
-    try:
-        if os.path.exists(folder_path):
-            shutil.rmtree(folder_path, ignore_errors=True)
-            print(f"Successfully cleaned up: {folder_path}")
-    except Exception as e:
-        print(f"Final cleanup error: {e}")'''
                             
-                            modified_content = re.sub(stop_pattern, new_stop_command, modified_content, flags=re.DOTALL)
-                        
-                        return modified_content
-                    else:
-                        raise Exception(f"Failed to download code from GitHub: {response.status}")
+                            # Find where the imports start and insert our path fix
+                            lines = content.split('\n')
+                            new_lines = []
+                            
+                            # Add our path fix after the imports begin
+                            imports_added = False
+                            for i, line in enumerate(lines):
+                                new_lines.append(line)
+                                if (line.startswith('import ') or line.startswith('from ')) and not imports_added:
+                                    if i + 1 < len(lines) and (not lines[i + 1].startswith('import ') and not lines[i + 1].startswith('from ')):
+                                        new_lines.append(path_fix_code.strip())
+                                        imports_added = True
+                            
+                            if not imports_added and len(new_lines) > 3:
+                                new_lines.insert(3, path_fix_code.strip())
+                            
+                            modified_content = '\n'.join(new_lines)
+                            
+                            # FIX THE TOKEN LOADING
+                            modified_content = modified_content.replace(
+                                "token = config['TOKEN']",
+                                "token = config.get('TOKEN') or config.get('token')"
+                            )
+                            
+                            modified_content = modified_content.replace(
+                                'token = config["TOKEN"]',
+                                'token = config.get("TOKEN") or config.get("token")'
+                            )
+                            
+                            modified_content = modified_content.replace(
+                                "config['TOKEN']",
+                                "config.get('TOKEN', config.get('token', ''))"
+                            )
+                            
+                            modified_content = modified_content.replace(
+                                'config["TOKEN"]',
+                                'config.get("TOKEN", config.get("token", ""))'
+                            )
+                            
+                            modified_content = modified_content.replace(
+                                'with open(config_path, \'r\') as f:',
+                                'with open(config_path, \'r\', encoding=\'utf-8\') as f:'
+                            )
+                            
+                            return modified_content
+                        else:
+                            raise Exception(f"GitHub returned status: {response.status}")
+            except asyncio.TimeoutError:
+                raise Exception("GitHub download timed out")
+            except Exception as e:
+                raise Exception(f"Network error: {str(e)}")
         
         # Download and modify the bot code
-        bot_code = await download_and_modify_bot_code()
+        try:
+            bot_code = await download_and_modify_bot_code()
+        except Exception as e:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Download Error | {str(e)} | {reset}\n```")
+            return
         
         # Write the bot file with UTF-8 encoding
-        with open(bot_file_path, 'w', encoding='utf-8') as f:
-            f.write(bot_code)
+        try:
+            with open(bot_file_path, 'w', encoding='utf-8') as f:
+                f.write(bot_code)
+        except Exception as e:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot write bot file: {str(e)} | {reset}\n```")
+            return
         
         # Start the hosted bot
-        if os.name == 'nt':  # Windows
-            process = subprocess.Popen(
-                [sys.executable, bot_file_path],
-                cwd=xlegacy_host_path,
-                creationflags=subprocess.CREATE_NEW_CONSOLE
-            )
-        else:  # Linux/Mac
-            process = subprocess.Popen(
-                ["python3", bot_file_path],
-                cwd=xlegacy_host_path
-            )
+        try:
+            if os.name == 'nt':  # Windows
+                process = subprocess.Popen(
+                    [sys.executable, bot_file_path],
+                    cwd=user_folder,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE
+                )
+            else:  # Linux/Mac
+                process = subprocess.Popen(
+                    ["python3", bot_file_path],
+                    cwd=user_folder
+                )
+            
+            # Check if process started successfully
+            import time
+            time.sleep(2)
+            if process.poll() is not None:
+                await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Warning | Bot started but closed immediately | {reset}\n```", delete_after=5)
+            else:
+                await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Success | Bot running in console | {reset}\n```", delete_after=5)
+            
+        except Exception as e:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot start bot: {str(e)} | {reset}\n```")
+            return
         
-        await ctx.send(f"```{theme_primary}Successfully started host for user: {username}{reset}```", delete_after=5)
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Hosting Token | {username} | {reset}\n```")
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Bot Created | {safe_username} | {reset}\n```")
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Auto-Start Enabled | Ready | {reset}\n```")
         
     except Exception as e:
-        await ctx.send(f"```{theme_primary}Error: {str(e)}{reset}```", delete_after=5)
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Critical Error | {str(e)} | {reset}\n```")
+
+@bot.command()
+async def thost(ctx):
+    """Host all created bot files in one combined window"""
+    try:
+        await ctx.message.delete()
+        
+        current_dir = os.getcwd()
+        xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
+        
+        if not os.path.exists(xlegacy_host_path):
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | No Hosted Bots | Use .hostton first | {reset}\n```")
+            return
+        
+        # Find all user folders (not individual bot files)
+        user_folders = []
+        try:
+            for item in os.listdir(xlegacy_host_path):
+                item_path = os.path.join(xlegacy_host_path, item)
+                if os.path.isdir(item_path):
+                    # Check if this folder has a bot.py file
+                    bot_file_path = os.path.join(item_path, "bot.py")
+                    if os.path.exists(bot_file_path):
+                        user_folders.append(item)
+        except Exception as e:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot read directory: {str(e)} | {reset}\n```")
+            return
+        
+        if not user_folders:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | No Bot Folders | Use .hostton first | {reset}\n```")
+            return
+        
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Starting Combined Host | {len(user_folders)} bots | {reset}\n```")
+        
+        # Start each hosted bot in its own console
+        started_count = 0
+        for user_folder in user_folders:
+            try:
+                folder_path = os.path.join(xlegacy_host_path, user_folder)
+                bot_file_path = os.path.join(folder_path, "bot.py")
+                
+                if os.path.exists(bot_file_path):
+                    if os.name == 'nt':  # Windows
+                        process = subprocess.Popen(
+                            [sys.executable, bot_file_path],
+                            cwd=folder_path,
+                            creationflags=subprocess.CREATE_NEW_CONSOLE
+                        )
+                    else:  # Linux/Mac
+                        process = subprocess.Popen(
+                            ["python3", bot_file_path],
+                            cwd=folder_path
+                        )
+                    
+                    # Check if process started
+                    import time
+                    time.sleep(1)
+                    if process.poll() is None:  # Still running
+                        started_count += 1
+                        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Started Bot | {user_folder} | {reset}\n```", delete_after=3)
+                    else:
+                        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Failed to Start | {user_folder} | {reset}\n```", delete_after=3)
+                
+            except Exception as e:
+                await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error Starting | {user_folder}: {str(e)} | {reset}\n```", delete_after=3)
+        
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Combined Host Complete | {started_count}/{len(user_folders)} started | {reset}\n```")
+        
+    except Exception as e:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Critical Error | {str(e)} | {reset}\n```")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import json
 
