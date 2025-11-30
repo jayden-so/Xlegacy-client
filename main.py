@@ -9,6 +9,7 @@ import random
 import aiohttp
 import shutil
 from discord.ext import commands, tasks
+import sys
 import os
 from discord.ext import commands
 import json
@@ -6616,14 +6617,14 @@ async def tss(ctx):
         await ctx.send(f"```{theme_primary}Token Streaming Status: {active_tasks}/{len(tasks)} tokens active{reset}```")
     else:
         await ctx.send(f"```{theme_primary}No token streaming active{reset}```")
-@bot.command()
+ @bot.command()
 async def hostton(ctx, token: str):
     """Host a token in a separate selfbot instance"""
     try:
         await ctx.message.delete()
         
         current_dir = os.getcwd()
-        xlegacy_host_path = os.path.join(current_dir, "Xlegacy host")
+        xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
         
         # Create directory if it doesn't exist
         os.makedirs(xlegacy_host_path, exist_ok=True)
@@ -6660,50 +6661,154 @@ async def hostton(ctx, token: str):
         
         # Create config file
         config = {"token": token}
-        with open(config_path, 'w', encoding='utf-8') as f:  # Added encoding
+        with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
         
-        # Load bot code from GitHub instead of hardcoding
-        async def download_bot_code():
+        # Load bot code from GitHub and modify it for hosted environment
+        async def download_and_modify_bot_code():
             github_url = "https://raw.githubusercontent.com/jayden-so/Xlegacy-client/refs/heads/main/main.py"
             async with aiohttp.ClientSession() as session:
                 async with session.get(github_url) as response:
                     if response.status == 200:
                         content = await response.text()
-                        # Clean any problematic characters
-                        content = content.encode('utf-8', 'ignore').decode('utf-8')
-                        return content
+                        
+                        # MODIFY THE DOWNLOADED CODE FOR HOSTED ENVIRONMENT
+                        # Add path fixing and cleanup at the very beginning
+                        path_fix_code = '''
+import os
+import sys
+import atexit
+import shutil
+
+# FIX PATHS FOR HOSTED ENVIRONMENT
+current_dir = os.path.dirname(os.path.abspath(__file__))
+os.chdir(current_dir)
+sys.path.insert(0, current_dir)
+
+# CLEANUP FUNCTION TO DELETE FOLDER ON EXIT
+def cleanup_on_exit():
+    try:
+        # Wait a moment to ensure everything is closed
+        import time
+        time.sleep(1)
+        
+        # Get the directory containing this script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        parent_dir = os.path.dirname(script_dir)
+        host_folder = "Xlegacy_host"
+        full_host_path = os.path.join(parent_dir, host_folder)
+        
+        # Check if we're in the Xlegacy_host folder
+        if os.path.basename(script_dir) == host_folder:
+            # Delete the entire host folder
+            if os.path.exists(full_host_path):
+                shutil.rmtree(full_host_path, ignore_errors=True)
+                print(f"Cleaned up host folder: {full_host_path}")
+    except Exception as e:
+        print(f"Cleanup error: {e}")
+
+# Register cleanup function
+atexit.register(cleanup_on_exit)
+
+'''
+                        
+                        # Find where the imports start and insert our path fix
+                        lines = content.split('\n')
+                        new_lines = []
+                        
+                        # Add our path fix after the imports begin
+                        imports_added = False
+                        for i, line in enumerate(lines):
+                            new_lines.append(line)
+                            # Look for the first import or the main code section
+                            if (line.startswith('import ') or line.startswith('from ')) and not imports_added:
+                                # Add our path fixing code after the first import block
+                                if i + 1 < len(lines) and (not lines[i + 1].startswith('import ') and not lines[i + 1].startswith('from ')):
+                                    new_lines.append(path_fix_code.strip())
+                                    imports_added = True
+                        
+                        # If we didn't find a good spot, add it after the first few lines
+                        if not imports_added and len(new_lines) > 3:
+                            new_lines.insert(3, path_fix_code.strip())
+                        
+                        # Also modify the stop command to trigger cleanup
+                        modified_content = '\n'.join(new_lines)
+                        
+                        # Replace any hardcoded config paths with local ones
+                        modified_content = modified_content.replace(
+                            'config_path = "config.json"',
+                            'config_path = "config.json"  # Using local config'
+                        )
+                        
+                        # Add error handling for file operations
+                        modified_content = modified_content.replace(
+                            'with open(config_path, \'r\') as f:',
+                            'with open(config_path, \'r\', encoding=\'utf-8\') as f:'
+                        )
+                        
+                        # Modify the stop command to include cleanup
+                        if '@bot.command()' in modified_content and 'async def stop(' in modified_content:
+                            # Find and replace the stop command
+                            stop_pattern = r'(@bot\.command\(\)\s*async def stop\(ctx\):.*?await bot\.close\(\))'
+                            new_stop_command = '''@bot.command()
+async def stop(ctx):
+    """Stop the hosted instance and clean up files"""
+    await ctx.send("Stopping hosted instance and cleaning up...")
+    # Trigger cleanup before closing
+    import shutil
+    import os
+    try:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if os.path.exists(current_dir):
+            # Schedule cleanup after bot closes
+            import asyncio
+            asyncio.create_task(final_cleanup(current_dir))
+    except Exception as e:
+        print(f"Cleanup setup error: {e}")
+    await bot.close()
+
+async def final_cleanup(folder_path):
+    """Perform final cleanup after bot closes"""
+    await asyncio.sleep(2)  # Wait for bot to fully close
+    try:
+        if os.path.exists(folder_path):
+            shutil.rmtree(folder_path, ignore_errors=True)
+            print(f"Successfully cleaned up: {folder_path}")
+    except Exception as e:
+        print(f"Final cleanup error: {e}")'''
+                            
+                            import re
+                            modified_content = re.sub(stop_pattern, new_stop_command, modified_content, flags=re.DOTALL)
+                        
+                        return modified_content
                     else:
                         raise Exception(f"Failed to download code from GitHub: {response.status}")
         
-        # Download the bot code from GitHub
-        bot_code = await download_bot_code()
+        # Download and modify the bot code
+        bot_code = await download_and_modify_bot_code()
         
         # Write the bot file with UTF-8 encoding
-        with open(bot_file_path, 'w', encoding='utf-8') as f:  # Added encoding here
+        with open(bot_file_path, 'w', encoding='utf-8') as f:
             f.write(bot_code)
         
-        # Change to host directory and start
-        os.chdir(xlegacy_host_path)
-        
+        # Start the hosted bot
         if os.name == 'nt':  # Windows
-            subprocess.Popen(["python", f"{safe_username}.py"], 
-                            cwd=xlegacy_host_path,
-                            creationflags=subprocess.CREATE_NEW_CONSOLE)
+            process = subprocess.Popen(
+                [sys.executable, bot_file_path],
+                cwd=xlegacy_host_path,
+                creationflags=subprocess.CREATE_NEW_CONSOLE
+            )
         else:  # Linux/Mac
-            subprocess.Popen(["python3", f"{safe_username}.py"], 
-                            cwd=xlegacy_host_path)
-        
-        # Return to original directory
-        os.chdir(current_dir)
+            process = subprocess.Popen(
+                ["python3", bot_file_path],
+                cwd=xlegacy_host_path
+            )
         
         await ctx.send(f"```{theme_primary}Successfully started host for user: {username}{reset}```", delete_after=5)
-        await ctx.send(f"```{theme_primary}Created in: Xlegacy host/{safe_username}.py{reset}```", delete_after=5)
-        await ctx.send(f"```{theme_primary}Code loaded from GitHub{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Folder will auto-delete when bot stops{reset}```", delete_after=5)
         
     except Exception as e:
         await ctx.send(f"```{theme_primary}Error: {str(e)}{reset}```", delete_after=5)
-
 import json
 
 # Read token from config.json
