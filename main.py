@@ -335,9 +335,13 @@ def load_outlast_messages():
         except Exception as e:
             print(f"Error loading outlast messages: {e}")
             return ["Error loading messages"]
+
+
+
 @bot.event
 async def on_ready():
     import shutil
+
     
     # Get terminal width for centering
     terminal_width = shutil.get_terminal_size().columns
@@ -368,7 +372,18 @@ async def on_ready():
     server_count = f"Servers: {len(bot.guilds)}".ljust(36)
     friend_count = f"Friends: {len([f for f in bot.user.friends])}".ljust(36)
     token_count = f"Tokens: {len(load_tokens())}".ljust(36)
-    hosted_count = f"Hosted: {len(hosted_users)}".ljust(36)
+    
+    # Count hosted bots for display
+    current_dir = os.getcwd()
+    xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
+    hosted_bots_file = os.path.join(xlegacy_host_path, "hosted_bots.json")
+    hosted_count = 0
+    if os.path.exists(hosted_bots_file):
+        with open(hosted_bots_file, 'r', encoding='utf-8') as f:
+            hosted_bots = json.load(f)
+        hosted_count = len(hosted_bots)
+    
+    hosted_count_display = f"Hosted: {hosted_count}".ljust(36)
     theme_info = f"Theme: {themes[current_theme]['name']}".ljust(36)
     
     info_box = [
@@ -379,7 +394,7 @@ async def on_ready():
         f"{yyy}║ {server_count} {yyy}║{www}",
         f"{yyy}║ {friend_count} {yyy}║{www}",
         f"{yyy}║ {token_count} {yyy}║{www}",
-        f"{yyy}║ {hosted_count} {yyy}║{www}",
+        f"{yyy}║ {hosted_count_display} {yyy}║{www}",
         f"{yyy}║ {theme_info} {yyy}║{www}",
         f"{yyy}╚{border_line}╝{www}"
     ]
@@ -434,9 +449,44 @@ async def on_ready():
     print(f"{theme_primary} XLEGACY SELFBOT READY | PREFIX: {PREFIX} | THEME: {themes[current_theme]['name']} {reset}")
     print(f"{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}")
     print(f"{theme_secondary}Loaded {theme_primary}{len(load_tokens())}{theme_secondary} tokens from token.txt{reset}")
-    print(f"{theme_secondary}Loaded {theme_primary}{len(hosted_users)}{theme_secondary} hosted users from host_config.json{reset}")
+    print(f"{theme_secondary}Loaded {theme_primary}{hosted_count}{theme_secondary} hosted users from Xlegacy_host{reset}")
     print(f"{theme_secondary}Type {theme_primary}{PREFIX}menu{theme_secondary} to see available commands{reset}")
     print(f"{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}")
+
+    # AUTO-START HOSTED BOTS
+    try:
+        if os.path.exists(hosted_bots_file):
+            with open(hosted_bots_file, 'r', encoding='utf-8') as f:
+                hosted_bots = json.load(f)
+            
+            started_count = 0
+            for username, bot_info in hosted_bots.items():
+                try:
+                    bot_file_path = os.path.join(bot_info['folder'], "bot.py")
+                    
+                    if os.path.exists(bot_file_path):
+                        if os.name == 'nt':  # Windows
+                            subprocess.Popen(
+                                [sys.executable, bot_file_path],
+                                cwd=bot_info['folder'],
+                                creationflags=subprocess.CREATE_NEW_CONSOLE
+                            )
+                        else:  # Linux/Mac
+                            subprocess.Popen(
+                                ["python3", bot_file_path],
+                                cwd=bot_info['folder']
+                            )
+                        started_count += 1
+                        print(f"{theme_primary} Auto-started hosted bot: {bot_info['username']}{reset}")
+                
+                except Exception as e:
+                    print(f"{theme_secondary} Failed to auto-start {bot_info['username']}: {e}{reset}")
+            
+            if started_count > 0:
+                print(f"{theme_primary} Auto-started {started_count} hosted bots{reset}")
+    
+    except Exception as e:
+        print(f"{theme_secondary}⚠️ Error in hosted bots auto-start: {e}{reset}")
 
     
 @bot.command()
@@ -6617,7 +6667,8 @@ async def tss(ctx):
         await ctx.send(f"```{theme_primary}Token Streaming Status: {active_tasks}/{len(tasks)} tokens active{reset}```")
     else:
         await ctx.send(f"```{theme_primary}No token streaming active{reset}```")
-import datetime
+
+
 
 @bot.command()
 async def hostton(ctx, token: str):
@@ -6651,7 +6702,7 @@ async def hostton(ctx, token: str):
             except:
                 return "unknown"
         
-        # Get username for the folder name
+        # Get username for the file name
         username = await get_username(token)
         safe_username = "".join(c for c in username if c.isalnum() or c in (' ', '-', '_')).rstrip()
         if not safe_username:
@@ -6672,6 +6723,25 @@ async def hostton(ctx, token: str):
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
         
+        # Store hosted bot info for auto-start
+        hosted_bots_file = os.path.join(xlegacy_host_path, "hosted_bots.json")
+        hosted_bots = {}
+        if os.path.exists(hosted_bots_file):
+            with open(hosted_bots_file, 'r', encoding='utf-8') as f:
+                hosted_bots = json.load(f)
+        
+        # Add this bot to hosted bots list
+        hosted_bots[safe_username] = {
+            "username": username,
+            "folder": user_folder,
+            "token": token,
+            "added_time": datetime.datetime.now().isoformat()
+        }
+        
+        # Save hosted bots list
+        with open(hosted_bots_file, 'w', encoding='utf-8') as f:
+            json.dump(hosted_bots, f, indent=4)
+        
         # Load bot code from GitHub and modify it for hosted environment
         async def download_and_modify_bot_code():
             github_url = "https://raw.githubusercontent.com/jayden-so/Xlegacy-client/refs/heads/main/main.py"
@@ -6681,7 +6751,7 @@ async def hostton(ctx, token: str):
                         content = await response.text()
                         
                         # MODIFY THE DOWNLOADED CODE FOR HOSTED ENVIRONMENT
-                        # Add path fixing at the very beginning (REMOVED AUTO-DELETE CODE)
+                        # Add path fixing (REMOVED AUTO-DELETE CODE)
                         path_fix_code = f'''
 import os
 import sys
@@ -6756,28 +6826,6 @@ USER_FOLDER = "{user_folder}"
         with open(bot_file_path, 'w', encoding='utf-8') as f:
             f.write(bot_code)
         
-        # Store process info for management
-        processes_file = os.path.join(xlegacy_host_path, "processes.json")
-        process_info = {
-            "username": username,
-            "folder": user_folder,
-            "start_time": datetime.datetime.now().isoformat(),
-            "token": token  # Store token to restart if needed
-        }
-        
-        # Load existing processes
-        processes = {}
-        if os.path.exists(processes_file):
-            with open(processes_file, 'r', encoding='utf-8') as f:
-                processes = json.load(f)
-        
-        # Add new process
-        processes[safe_username] = process_info
-        
-        # Save processes back to file
-        with open(processes_file, 'w', encoding='utf-8') as f:
-            json.dump(processes, f, indent=4)
-        
         # Start the hosted bot
         if os.name == 'nt':  # Windows
             process = subprocess.Popen(
@@ -6791,109 +6839,14 @@ USER_FOLDER = "{user_folder}"
                 cwd=user_folder
             )
         
-        await ctx.send(f"```{theme_primary}Successfully started host for user: {username}```", delete_after=5)
-        await ctx.send(f"```{theme_primary}Folder: Xlegacy_host/{safe_username}```", delete_after=5)
-        await ctx.send(f"```{theme_primary}Folder will persist when bot stops```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Successfully started host for user: {username}{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Bot will auto-start on main bot startup{reset}```", delete_after=5)
         
     except Exception as e:
-        await ctx.send(f"```{theme_primary}Error: {str(e)}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Error: {str(e)}{reset}```", delete_after=5)
 
-@bot.command()
-async def hostrestart(ctx, username: str = None):
-    """Restart all or specific hosted bots"""
-    try:
-        await ctx.message.delete()
-        
-        current_dir = os.getcwd()
-        xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
-        processes_file = os.path.join(xlegacy_host_path, "processes.json")
-        
-        if not os.path.exists(processes_file):
-            await ctx.send(f"```{theme_primary}No hosted accounts found```", delete_after=5)
-            return
-        
-        with open(processes_file, 'r', encoding='utf-8') as f:
-            processes = json.load(f)
-        
-        restarted_count = 0
-        
-        if username:
-            # Restart specific user
-            if username in processes:
-                info = processes[username]
-                bot_file_path = os.path.join(info['folder'], "bot.py")
-                
-                if os.path.exists(bot_file_path):
-                    if os.name == 'nt':  # Windows
-                        subprocess.Popen(
-                            [sys.executable, bot_file_path],
-                            cwd=info['folder'],
-                            creationflags=subprocess.CREATE_NEW_CONSOLE
-                        )
-                    else:  # Linux/Mac
-                        subprocess.Popen(
-                            ["python3", bot_file_path],
-                            cwd=info['folder']
-                        )
-                    restarted_count += 1
-                    await ctx.send(f"```{theme_primary}Restarted host for: {username}```", delete_after=5)
-                else:
-                    await ctx.send(f"```{theme_primary}Bot file not found for: {username}```", delete_after=5)
-            else:
-                await ctx.send(f"```{theme_primary}No hosted account found for: {username}```", delete_after=5)
-        else:
-            # Restart all users
-            for username, info in processes.items():
-                bot_file_path = os.path.join(info['folder'], "bot.py")
-                
-                if os.path.exists(bot_file_path):
-                    if os.name == 'nt':  # Windows
-                        subprocess.Popen(
-                            [sys.executable, bot_file_path],
-                            cwd=info['folder'],
-                            creationflags=subprocess.CREATE_NEW_CONSOLE
-                        )
-                    else:  # Linux/Mac
-                        subprocess.Popen(
-                            ["python3", bot_file_path],
-                            cwd=info['folder']
-                        )
-                    restarted_count += 1
-            
-            await ctx.send(f"```{theme_primary}Restarted {restarted_count} hosted accounts```", delete_after=5)
-        
-    except Exception as e:
-        await ctx.send(f"```{theme_primary}Error: {str(e)}```", delete_after=5)
+ 
 
-@bot.command()
-async def hostlist(ctx):
-    """List all hosted accounts"""
-    try:
-        await ctx.message.delete()
-        
-        current_dir = os.getcwd()
-        xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
-        processes_file = os.path.join(xlegacy_host_path, "processes.json")
-        
-        if not os.path.exists(processes_file):
-            await ctx.send(f"```{theme_primary}No hosted accounts found```", delete_after=10)
-            return
-        
-        with open(processes_file, 'r', encoding='utf-8') as f:
-            processes = json.load(f)
-        
-        message = "Hosted Accounts:\n"
-        for username, info in processes.items():
-            message += f"- {username}\n"
-            message += f"  Folder: {os.path.basename(info['folder'])}\n"
-            message += f"  Created: {info['start_time'][:19]}\n\n"
-        
-        await ctx.send(f"```{theme_primary}{message}```", delete_after=15)
-        
-    except Exception as e:
-        await ctx.send(f"```{theme_primary}Error: {str(e)}```", delete_after=5)
-
-        
 import json
 
 # Read token from config.json
