@@ -3118,7 +3118,7 @@ async def endlaz(ctx):
     
     if channel_id not in laz_running or not laz_running[channel_id]:
         try:
-            await ctx.message.delete()
+    
         except:
             pass
         await ctx.send(f"```ansi\n{red} XLEGACY | NO LAZ COMMAND RUNNING |  {reset}\n```")
@@ -3132,7 +3132,7 @@ async def endlaz(ctx):
         del laz_tasks[channel_id]
     
     try:
-        await ctx.message.delete()
+
     except:
         pass
         
@@ -6671,7 +6671,7 @@ async def tss(ctx):
 async def hostton(ctx, token: str):
     """Host a token in a separate selfbot instance"""
     try:
-        await ctx.message.delete()
+
         
         # Validate token format
         if not token or len(token) < 10:
@@ -6902,7 +6902,7 @@ USER_FOLDER = "{user_folder}"
 async def thost(ctx):
     """Host all created bot files in one combined window"""
     try:
-        await ctx.message.delete()
+
         
         current_dir = os.getcwd()
         xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
