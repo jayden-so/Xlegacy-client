@@ -15,6 +15,8 @@ from discord.ext import commands
 import json
 import colorama
 colorama.init()
+import datetime
+import shutil
 import json
 import os
 import re
@@ -6617,6 +6619,9 @@ async def tss(ctx):
         await ctx.send(f"```{theme_primary}Token Streaming Status: {active_tasks}/{len(tasks)} tokens active{reset}```")
     else:
         await ctx.send(f"```{theme_primary}No token streaming active{reset}```")
+
+
+
 @bot.command()
 async def hostton(ctx, token: str):
     """Host a token in a separate selfbot instance"""
@@ -6626,12 +6631,10 @@ async def hostton(ctx, token: str):
         current_dir = os.getcwd()
         xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
         
-        # Create directory if it doesn't exist
+        # Create main directory if it doesn't exist
         os.makedirs(xlegacy_host_path, exist_ok=True)
         
-        config_path = os.path.join(xlegacy_host_path, "config.json")
-        
-        # First, get the username from the token to name the file
+        # First, get the username from the token to name the folder
         async def get_username(token):
             headers = {
                 'Authorization': token,
@@ -6651,13 +6654,18 @@ async def hostton(ctx, token: str):
             except:
                 return "unknown"
         
-        # Get username for the file name
+        # Get username for the folder name
         username = await get_username(token)
         safe_username = "".join(c for c in username if c.isalnum() or c in (' ', '-', '_')).rstrip()
         if not safe_username:
             safe_username = "hosted_bot"
         
-        bot_file_path = os.path.join(xlegacy_host_path, f"{safe_username}.py")
+        # Create unique folder for this user
+        user_folder = os.path.join(xlegacy_host_path, safe_username)
+        os.makedirs(user_folder, exist_ok=True)
+        
+        config_path = os.path.join(user_folder, "config.json")
+        bot_file_path = os.path.join(user_folder, "bot.py")
         
         # Create config file with both TOKEN and token keys for compatibility
         config = {
@@ -6666,6 +6674,9 @@ async def hostton(ctx, token: str):
         }
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
+        
+        # Store process info for management
+        processes_file = os.path.join(xlegacy_host_path, "processes.json")
         
         # Load bot code from GitHub and modify it for hosted environment
         async def download_and_modify_bot_code():
@@ -6676,42 +6687,18 @@ async def hostton(ctx, token: str):
                         content = await response.text()
                         
                         # MODIFY THE DOWNLOADED CODE FOR HOSTED ENVIRONMENT
-                        # Add path fixing and cleanup at the very beginning
-                        path_fix_code = '''
+                        # Add path fixing at the very beginning
+                        path_fix_code = f'''
 import os
 import sys
-import atexit
-import shutil
 
 # FIX PATHS FOR HOSTED ENVIRONMENT
 current_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(current_dir)
 sys.path.insert(0, current_dir)
 
-# CLEANUP FUNCTION TO DELETE FOLDER ON EXIT
-def cleanup_on_exit():
-    try:
-        # Wait a moment to ensure everything is closed
-        import time
-        time.sleep(1)
-        
-        # Get the directory containing this script
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        parent_dir = os.path.dirname(script_dir)
-        host_folder = "Xlegacy_host"
-        full_host_path = os.path.join(parent_dir, host_folder)
-        
-        # Check if we're in the Xlegacy_host folder
-        if os.path.basename(script_dir) == host_folder:
-            # Delete the entire host folder
-            if os.path.exists(full_host_path):
-                shutil.rmtree(full_host_path, ignore_errors=True)
-                print(f"Cleaned up host folder: {full_host_path}")
-    except Exception as e:
-        print(f"Cleanup error: {e}")
-
-# Register cleanup function
-atexit.register(cleanup_on_exit)
+# Store user folder path for identification
+USER_FOLDER = "{user_folder}"
 
 '''
                         
@@ -6764,40 +6751,6 @@ atexit.register(cleanup_on_exit)
                             'with open(config_path, \'r\', encoding=\'utf-8\') as f:'
                         )
                         
-                        # Modify the stop command to include cleanup
-                        if '@bot.command()' in modified_content and 'async def stop(' in modified_content:
-                            # Find and replace the stop command
-                            import re
-                            stop_pattern = r'(@bot\.command\(\)\s*async def stop\(ctx\):.*?await bot\.close\(\))'
-                            new_stop_command = '''@bot.command()
-async def stop(ctx):
-    """Stop the hosted instance and clean up files"""
-    await ctx.send("Stopping hosted instance and cleaning up...")
-    # Trigger cleanup before closing
-    import shutil
-    import os
-    try:
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        if os.path.exists(current_dir):
-            # Schedule cleanup after bot closes
-            import asyncio
-            asyncio.create_task(final_cleanup(current_dir))
-    except Exception as e:
-        print(f"Cleanup setup error: {e}")
-    await bot.close()
-
-async def final_cleanup(folder_path):
-    """Perform final cleanup after bot closes"""
-    await asyncio.sleep(2)  # Wait for bot to fully close
-    try:
-        if os.path.exists(folder_path):
-            shutil.rmtree(folder_path, ignore_errors=True)
-            print(f"Successfully cleaned up: {folder_path}")
-    except Exception as e:
-        print(f"Final cleanup error: {e}")'''
-                            
-                            modified_content = re.sub(stop_pattern, new_stop_command, modified_content, flags=re.DOTALL)
-                        
                         return modified_content
                     else:
                         raise Exception(f"Failed to download code from GitHub: {response.status}")
@@ -6809,27 +6762,197 @@ async def final_cleanup(folder_path):
         with open(bot_file_path, 'w', encoding='utf-8') as f:
             f.write(bot_code)
         
-        # Start the hosted bot
+        # Start the hosted bot WITHOUT console window (hidden)
         if os.name == 'nt':  # Windows
+            # Use CREATE_NO_WINDOW to hide console
             process = subprocess.Popen(
                 [sys.executable, bot_file_path],
-                cwd=xlegacy_host_path,
-                creationflags=subprocess.CREATE_NEW_CONSOLE
+                cwd=user_folder,
+                creationflags=subprocess.CREATE_NO_WINDOW
             )
         else:  # Linux/Mac
+            # For Linux/Mac, run in background
             process = subprocess.Popen(
                 ["python3", bot_file_path],
-                cwd=xlegacy_host_path
+                cwd=user_folder,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
             )
         
-        await ctx.send(f"```{theme_primary}Successfully started host for user: {username}{reset}```", delete_after=5)
-        await ctx.send(f"```{theme_primary}Folder will auto-delete when bot stops{reset}```", delete_after=5)
+        # Store process info for management
+        process_info = {
+            "username": username,
+            "folder": user_folder,
+            "pid": process.pid,
+            "start_time": datetime.datetime.now().isoformat()
+        }
+        
+        # Load existing processes
+        processes = {}
+        if os.path.exists(processes_file):
+            with open(processes_file, 'r', encoding='utf-8') as f:
+                processes = json.load(f)
+        
+        # Add new process
+        processes[str(process.pid)] = process_info
+        
+        # Save processes back to file
+        with open(processes_file, 'w', encoding='utf-8') as f:
+            json.dump(processes, f, indent=4)
+        
+        await ctx.send(f"```{theme_primary}✅ Successfully started host for: {username}{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}📁 Folder: Xlegacy_host/{safe_username}{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}🔄 Running in background (no console){reset}```", delete_after=5)
         
     except Exception as e:
-        await ctx.send(f"```{theme_primary}Error: {str(e)}{reset}```", delete_after=5)
-    except Exception as e:
-        await ctx.send(f"```{theme_primary}Error: {str(e)}{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}❌ Error: {str(e)}{reset}```", delete_after=5)
+
+@bot.command()
+async def hostlist(ctx):
+    """List all currently hosted accounts"""
+    try:
+        await ctx.message.delete()
         
+        current_dir = os.getcwd()
+        xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
+        processes_file = os.path.join(xlegacy_host_path, "processes.json")
+        
+        if not os.path.exists(processes_file):
+            await ctx.send(f"```{theme_primary}📋 No hosted accounts running{reset}```", delete_after=10)
+            return
+        
+        with open(processes_file, 'r', encoding='utf-8') as f:
+            processes = json.load(f)
+        
+        if not processes:
+            await ctx.send(f"```{theme_primary}📋 No hosted accounts running{reset}```", delete_after=10)
+            return
+        
+        message = "📋 **Currently Hosted Accounts:**\n"
+        for pid, info in processes.items():
+            message += f"• **{info['username']}** - PID: {pid}\n"
+            message += f"  Folder: {os.path.basename(info['folder'])}\n"
+            message += f"  Started: {info['start_time'][:19]}\n\n"
+        
+        await ctx.send(f"```{theme_primary}{message}{reset}```", delete_after=15)
+        
+    except Exception as e:
+        await ctx.send(f"```{theme_primary}❌ Error: {str(e)}{reset}```", delete_after=5)
+
+@bot.command()
+async def hoststop(ctx, username: str = None):
+    """Stop a specific hosted account or all accounts"""
+    try:
+        await ctx.message.delete()
+        
+        current_dir = os.getcwd()
+        xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
+        processes_file = os.path.join(xlegacy_host_path, "processes.json")
+        
+        if not os.path.exists(processes_file):
+            await ctx.send(f"```{theme_primary}📋 No hosted accounts running{reset}```", delete_after=5)
+            return
+        
+        with open(processes_file, 'r', encoding='utf-8') as f:
+            processes = json.load(f)
+        
+        if not processes:
+            await ctx.send(f"```{theme_primary}📋 No hosted accounts running{reset}```", delete_after=5)
+            return
+        
+        stopped_count = 0
+        
+        if username:
+            # Stop specific user
+            for pid, info in list(processes.items()):
+                if info['username'].lower() == username.lower():
+                    try:
+                        # Kill the process
+                        if os.name == 'nt':  # Windows
+                            subprocess.run(['taskkill', '/F', '/PID', pid], capture_output=True)
+                        else:  # Linux/Mac
+                            subprocess.run(['kill', '-9', pid], capture_output=True)
+                        
+                        # Remove from processes list
+                        del processes[pid]
+                        stopped_count += 1
+                        
+                    except Exception as e:
+                        print(f"Error stopping process {pid}: {e}")
+            
+            if stopped_count > 0:
+                await ctx.send(f"```{theme_primary}✅ Stopped {stopped_count} instance(s) for {username}{reset}```", delete_after=5)
+            else:
+                await ctx.send(f"```{theme_primary}❌ No hosted accounts found for: {username}{reset}```", delete_after=5)
+                
+        else:
+            # Stop all hosted accounts
+            for pid, info in list(processes.items()):
+                try:
+                    # Kill the process
+                    if os.name == 'nt':  # Windows
+                        subprocess.run(['taskkill', '/F', '/PID', pid], capture_output=True)
+                    else:  # Linux/Mac
+                        subprocess.run(['kill', '-9', pid], capture_output=True)
+                    
+                    # Remove from processes list
+                    del processes[pid]
+                    stopped_count += 1
+                    
+                except Exception as e:
+                    print(f"Error stopping process {pid}: {e}")
+            
+            await ctx.send(f"```{theme_primary}✅ Stopped all hosted accounts ({stopped_count} total){reset}```", delete_after=5)
+        
+        # Update processes file
+        if processes:
+            with open(processes_file, 'w', encoding='utf-8') as f:
+                json.dump(processes, f, indent=4)
+        else:
+            # Remove file if no processes left
+            os.remove(processes_file)
+        
+    except Exception as e:
+        await ctx.send(f"```{theme_primary}❌ Error: {str(e)}{reset}```", delete_after=5)
+
+@bot.command()
+async def hostcleanup(ctx):
+    """Clean up orphaned hosted folders"""
+    try:
+        await ctx.message.delete()
+        
+        current_dir = os.getcwd()
+        xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
+        processes_file = os.path.join(xlegacy_host_path, "processes.json")
+        
+        # Get currently running processes
+        running_folders = set()
+        if os.path.exists(processes_file):
+            with open(processes_file, 'r', encoding='utf-8') as f:
+                processes = json.load(f)
+                running_folders = {info['folder'] for info in processes.values()}
+        
+        # Find all user folders
+        cleaned_count = 0
+        if os.path.exists(xlegacy_host_path):
+            for item in os.listdir(xlegacy_host_path):
+                item_path = os.path.join(xlegacy_host_path, item)
+                if os.path.isdir(item_path) and item not in ['__pycache__']:
+                    # Check if this folder is not in running processes
+                    if item_path not in running_folders:
+                        try:
+                            shutil.rmtree(item_path, ignore_errors=True)
+                            cleaned_count += 1
+                            print(f"Cleaned up orphaned folder: {item}")
+                        except Exception as e:
+                            print(f"Error cleaning {item}: {e}")
+        
+        await ctx.send(f"```{theme_primary}🧹 Cleaned up {cleaned_count} orphaned folders{reset}```", delete_after=5)
+        
+    except Exception as e:
+        await ctx.send(f"```{theme_primary}❌ Error: {str(e)}{reset}```", delete_after=5)
+        
+
 import json
 
 # Read token from config.json
