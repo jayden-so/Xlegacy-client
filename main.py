@@ -236,6 +236,64 @@ def load_hosted_users():
 load_hosted_users()
 
 
+@bot.group(name='host', invoke_without_command=True)
+async def host(ctx):
+    """Host group to manage hosted users."""
+    await ctx.send(f"```ansi\n{theme_primary}Host management commands:{reset}\n\n{theme_secondary}{PREFIX}host add <@user> - Add a hosted user\n{theme_secondary}{PREFIX}host remove <@user> - Remove a hosted user\n{theme_secondary}{PREFIX}host list - List hosted users{reset}\n```")
+
+
+@host.command(name='add')
+async def host_add(ctx, user: discord.User):
+    """Add a user to the hosted list."""
+    if ctx.author != bot.user:
+        await ctx.send(f"```ansi\n{theme_primary}Unauthorized - only the host owner can manage hosted users{reset}\n```")
+        return
+    try:
+        hosted_users[str(user.id)] = True
+        save_hosted_users()
+        await ctx.send(f"```ansi\n{theme_primary}Added hosted user: {user.name} ({user.id}){reset}\n```")
+    except Exception as e:
+        await ctx.send(f"```ansi\n{theme_primary}Failed to add hosted user: {e}{reset}\n```")
+
+
+@host.command(name='remove')
+async def host_remove(ctx, user: discord.User):
+    """Remove a user from the hosted list."""
+    if ctx.author != bot.user:
+        await ctx.send(f"```ansi\n{theme_primary}Unauthorized - only the host owner can manage hosted users{reset}\n```")
+        return
+    try:
+        if str(user.id) in hosted_users:
+            del hosted_users[str(user.id)]
+            save_hosted_users()
+            await ctx.send(f"```ansi\n{theme_primary}Removed hosted user: {user.name} ({user.id}){reset}\n```")
+        else:
+            await ctx.send(f"```ansi\n{theme_primary}User is not hosted: {user.name}{reset}\n```")
+    except Exception as e:
+        await ctx.send(f"```ansi\n{theme_primary}Failed to remove hosted user: {e}{reset}\n```")
+
+
+@host.command(name='list')
+async def host_list(ctx):
+    """List all hosted users."""
+    if ctx.author != bot.user:
+        await ctx.send(f"```ansi\n{theme_primary}Unauthorized - only the host owner can list hosted users{reset}\n```")
+        return
+    try:
+        if not hosted_users:
+            await ctx.send(f"```ansi\n{theme_primary}No hosted users configured{reset}\n```")
+            return
+        lines = []
+        for uid in list(hosted_users.keys()):
+            try:
+                u = await bot.fetch_user(int(uid))
+                lines.append(f"{u.name} ({uid})")
+            except Exception:
+                lines.append(f"Unknown User ({uid})")
+        await ctx.send(f"```ansi\n{theme_primary}Hosted users:\n\n{theme_secondary}" + "\n".join(lines) + f"{reset}\n```")
+    except Exception as e:
+        await ctx.send(f"```ansi\n{theme_primary}Failed to list hosted users: {e}{reset}\n```")
+
 # Load tokens from file
 def load_tokens():
     try:
@@ -277,8 +335,11 @@ def load_outlast_messages():
             return ["Error loading messages"]
 
 
-async def print_on_ready_banner():
+
+@bot.event
+async def on_ready():
     import shutil
+
     
     # Get terminal width for centering
     terminal_width = shutil.get_terminal_size().columns
@@ -290,16 +351,16 @@ async def print_on_ready_banner():
     
     # Banner text - FIXED ESCAPE SEQUENCES
     banner_lines = [
-        f"{yyy}___  _ _     _____ _____ ____  ____ ___  _{www}",
-        f"{yyy}\\  \\/// \\   /  __//  __//  _ \\/   _\\\\  \\//{www}",
-        f"{yyy} \\  / | |   |  \\  | |  _| / \\||  /   \\  / {www}",
-        f"{yyy} /  \\ | |_/\\|  /_ | |_//| |-|||  \\__ / /  {www}",
-        f"{yyy}/__/\\\\\\____/\\____\\\\____\\\\_/ \\|\\____//_/   {www}",
-        f"{mkk}╔═════════════════════════════════════╗{www}",
-        f"{mkk}║           {yyy}XLEGACY SELFBOT{mkk}             ║{www}",
-        f"{mkk}║          {yyy}By @unholxy{mkk}                 ║{www}",
-        f"{mkk}╚═════════════════════════════════════╝{www}"
-    ]
+    f"{yyy}___  _ _     _____ _____ ____  ____ ___  _{www}",
+    f"{yyy}\\  \\/// \\   /  __//  __//  _ \\/   _\\\\  \\//{www}",
+    f"{yyy} \\  / | |   |  \\  | |  _| / \\||  /   \\  / {www}",
+    f"{yyy} /  \\ | |_/\\|  /_ | |_//| |-|||  \\__ / /  {www}",
+    f"{yyy}/__/\\\\\\____/\\____\\\\____\\\\_/ \\|\\____//_/   {www}",
+    f"{mkk}╔═════════════════════════════════════╗{www}",
+    f"{mkk}║           {yyy}XLEGACY SELFBOT{mkk}             ║{www}",
+    f"{mkk}║          {yyy}By @unholxy{mkk}                 ║{www}",
+    f"{mkk}╚═════════════════════════════════════╝{www}"
+]
     
     # Bot info box
     border_line = "═" * 37
@@ -389,12 +450,8 @@ async def print_on_ready_banner():
     print(f"{theme_secondary}Loaded {theme_primary}{hosted_count}{theme_secondary} hosted users from Xlegacy_host{reset}")
     print(f"{theme_secondary}Type {theme_primary}{PREFIX}menu{theme_secondary} to see available commands{reset}")
     print(f"{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}")
-@bot.event
-async def on_ready():
-    await print_on_ready_banner()
-    
-    # AUTO-START HOSTED BOTS (keep this part)
-    hosted_bots_file = os.path.join(os.getcwd(), "Xlegacy_host", "hosted_bots.json")
+
+    # AUTO-START HOSTED BOTS
     try:
         if os.path.exists(hosted_bots_file):
             with open(hosted_bots_file, 'r', encoding='utf-8') as f:
@@ -428,6 +485,7 @@ async def on_ready():
     
     except Exception as e:
         print(f"{theme_secondary}⚠️ Error in hosted bots auto-start: {e}{reset}")
+
     
 @bot.command()
 async def menu(ctx):
@@ -3053,7 +3111,25 @@ async def laz(ctx, user: discord.User, name1: str, name2: str = None):
     
     laz_tasks[channel_id] = tasks
     await ctx.send(f"```ansi\n{red} XLEGACY | LAZ SPAM STARTED | USE .ENDLAZ TO STOP |  {reset}\n```")
-
+@bot.command()
+async def endlaz(ctx):
+    channel_id = ctx.channel.id
+    
+    if channel_id not in laz_running or not laz_running[channel_id]:
+        await ctx.send(f"```ansi\n{red} XLEGACY | NO LAZ COMMAND RUNNING |  {reset}\n```")
+        return
+    
+    laz_running[channel_id] = False
+    
+    if channel_id in laz_tasks:
+        for task in laz_tasks[channel_id]:
+            task.cancel()
+        del laz_tasks[channel_id]
+        
+    try:
+        await ctx.send(f"```ansi\n{red} XLEGACY | LAZ COMMAND STOPPED |  {reset}\n```")
+    except Exception:
+        pass
 
 @bot.command()
 async def hypesquad(ctx, house: str):
@@ -5704,6 +5780,8 @@ async def multi(ctx):
 {light_red}Note: Make sure token.txt is filled with your tokens!{reset}
 """
     await ctx.send(f"```ansi\n{help_content}\n```")
+
+
 @bot.command(name="reset")
 async def reset_cmd(ctx):
     """Reset the selfbot - clear console and reload everything"""
@@ -5868,15 +5946,12 @@ async def restart_bot():
         print(f"{green}Selfbot reset complete!{reset}")
         print(f"{light_red}All tasks stopped, console cleared, and modules reloaded.{reset}")
         
-        # Print the on_ready banner again
-        print("\n" * 3)  # Add some spacing
-        await print_on_ready_banner()
-        
     except Exception as e:
         print(f"{light_red}Error during restart: {e}{reset}")
         # Fallback: restart the entire script
         print(f"{red}Performing hard restart...{reset}")
         os.execv(sys.executable, ['python'] + sys.argv)
+
 
 
 @bot.command()
@@ -5898,12 +5973,9 @@ async def hardreset(ctx):
 {light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────
 {red}Completely restarting Python process...
 {light_red}This will take a moment...{reset}
-```""")
+""")
     
     await asyncio.sleep(2)
-    
-    # Hard restart - completely new process
-    os.execv(sys.executable, ['python'] + sys.argv)
     
     # Hard restart - completely new process
     os.execv(sys.executable, ['python'] + sys.argv)
@@ -6584,7 +6656,6 @@ async def tss(ctx):
     else:
         await ctx.send(f"```{theme_primary}No token streaming active{reset}```")
       
-
 @bot.command()
 async def hostton(ctx, token: str):
     """Host a token in a separate selfbot instance"""
@@ -6710,9 +6781,8 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(current_dir)
 sys.path.insert(0, current_dir)
 
-# User folder for identification
-USER_FOLDER = f"Xlegacy_host/{safe_username}"
-USER_FOLDER = "{user_folder}"
+# User folder for identification - FIXED TO USE USERNAME
+USER_FOLDER = "Xlegacy_host/{safe_username}"
 
 '''
                             
