@@ -27,7 +27,6 @@ import timedelta
 import time
 from itertools import islice
 from datetime import datetime
-
 # Add these with your other global variables at the top
 current_theme = "red"  # Default theme
 themes = {
@@ -60,9 +59,44 @@ themes = {
         "secondary": "\033[96m",    # light_cyan
         "accent": "\033[30m",       # black
         "name": "Cyan Theme"
+    },
+    "pink": {
+        "primary": "\033[38;5;205m",    # bright pink
+        "secondary": "\033[38;5;213m",  # light pink
+        "accent": "\033[30m",           # black
+        "name": "Pink Theme"
+    },
+    "orange": {
+        "primary": "\033[38;5;208m",    # orange
+        "secondary": "\033[38;5;214m",  # light orange
+        "accent": "\033[30m",           # black
+        "name": "Orange Theme"
+    },
+    "yellow": {
+        "primary": "\033[33m",          # yellow
+        "secondary": "\033[93m",        # light yellow
+        "accent": "\033[30m",           # black
+        "name": "Yellow Theme"
+    },
+    "white": {
+        "primary": "\033[37m",          # white
+        "secondary": "\033[97m",        # bright white
+        "accent": "\033[30m",           # black
+        "name": "White Theme"
+    },
+    "gray": {
+        "primary": "\033[90m",          # gray
+        "secondary": "\033[37m",        # light gray
+        "accent": "\033[30m",           # black
+        "name": "Gray Theme"
+    },
+    "rainbow": {
+        "primary": "\033[38;5;208m",    # orange (rotating)
+        "secondary": "\033[38;5;39m",   # blue (rotating)
+        "accent": "\033[30m",           # black
+        "name": "Rainbow Theme"
     }
 }
-
 
 
 import warnings
@@ -5726,7 +5760,6 @@ async def mreactoff(ctx):
 
 
 
-
 @bot.command()
 async def multi(ctx):
     """Display all multi-token commands"""
@@ -5735,52 +5768,41 @@ async def multi(ctx):
 {light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 
 {red}Token Management{reset}
-{light_red}[ {red}1{light_red} ] {black}tok                {light_red}- {red}Check status of all tokens{reset}
-{light_red}[ {red}2{light_red} ] {black}say <token_index> <message>{light_red} - {red}Send message with specific token{reset}
-{light_red}[ {red}3{light_red} ] {black}say <message>      {light_red}- {red}Send message with all tokens{reset}
+{light_red}[ {red}1{light_red} ] {black}tok                {light_red}- {red}Check token status{reset}           {light_red}[ {red}2{light_red} ] {black}say <token> <msg> {light_red}- {red}Send with specific token{reset}
+{light_red}[ {red}3{light_red} ] {black}say <message>      {light_red}- {red}Send with all tokens{reset}
 
 {red}Mass Actions{reset}
-{light_red}[ {red}4{light_red} ] {black}mspam <messages>   {light_red}- {red}Spam with multiple tokens{reset}
-{light_red}[ {red}5{light_red} ] {black}mspamoff           {light_red}- {red}Stop multi-token spam{reset}
-{light_red}[ {red}6{light_red} ] {black}reactm <emoji> <@user>{light_red} - {red}Mass react to user's messages{reset}
-{light_red}[ {red}7{light_red} ] {black}reactoff           {light_red}- {red}Stop mass reactions{reset}
-{light_red}[ {red}8{light_red} ] {black}multilast <@user> {light_red}- {red}Multi-token outlast{reset}
-{light_red}[ {red}9{light_red} ] {black}stopmultilast      {light_red}- {red}Stop multi-token outlast{reset}
+{light_red}[ {red}4{light_red} ] {black}mspam <messages>   {light_red}- {red}Multi-token spam{reset}            {light_red}[ {red}5{light_red} ] {black}mspamoff        {light_red}- {red}Stop spam{reset}
+{light_red}[ {red}6{light_red} ] {black}reactm <emoji> @user{light_red} - {red}Mass react{reset}              {light_red}[ {red}7{light_red} ] {black}reactoff       {light_red}- {red}Stop reactions{reset}
+{light_red}[ {red}8{light_red} ] {black}multilast @user   {light_red}- {red}Multi outlast{reset}              {light_red}[ {red}9{light_red} ] {black}stopmultilast  {light_red}- {red}Stop outlast{reset}
 
 {red}Voice Channel{reset}
-{light_red}[ {red}10{light_red} ] {black}multivc <channel_id>{light_red} - {red}Connect multiple tokens to VC{reset}
-{light_red}[ {red}11{light_red} ] {black}vcend <channel_id>{light_red} - {red}Disconnect tokens from VC{reset}
-{light_red}[ {red}12{light_red} ] {black}vcstop            {light_red}- {red}Stop all voice connections{reset}
+{light_red}[ {red}10{light_red} ] {black}multivc <id>     {light_red}- {red}Connect to VC{reset}              {light_red}[ {red}11{light_red} ] {black}vcend <id>     {light_red}- {red}Leave VC{reset}
+{light_red}[ {red}12{light_red} ] {black}vcstop           {light_red}- {red}Stop all VC{reset}
 
 {red}Auto Responses{reset}
-{light_red}[ {red}13{light_red} ] {black}arm <@user>       {light_red}- {red}Auto-reply with multiple tokens{reset}
-{light_red}[ {red}14{light_red} ] {black}armend            {light_red}- {red}Stop multi-token auto-reply{reset}
-{light_red}[ {red}15{light_red} ] {black}kill <user_id>    {light_red}- {red}Mass spam user with all tokens{reset}
-{light_red}[ {red}16{light_red} ] {black}killend           {light_red}- {red}Stop mass spam{reset}
+{light_red}[ {red}13{light_red} ] {black}arm @user        {light_red}- {red}Auto-reply multi{reset}           {light_red}[ {red}14{light_red} ] {black}armend         {light_red}- {red}Stop auto-reply{reset}
+{light_red}[ {red}15{light_red} ] {black}kill <user_id>   {light_red}- {red}Mass spam user{reset}            {light_red}[ {red}16{light_red} ] {black}killend        {light_red}- {red}Stop spam{reset}
 
 {red}Group Chat{reset}
-{light_red}[ {red}17{light_red} ] {black}gcfill            {light_red}- {red}Add tokens to group chat{reset}
-{light_red}[ {red}18{light_red} ] {black}gcleave           {light_red}- {red}Make tokens leave group chat{reset}
-{light_red}[ {red}19{light_red} ] {black}gcleaveall        {light_red}- {red}Make tokens leave all group chats{reset}
+{light_red}[ {red}17{light_red} ] {black}gcfill           {light_red}- {red}Add to GC{reset}                 {light_red}[ {red}18{light_red} ] {black}gcleave        {light_red}- {red}Leave GC{reset}
+{light_red}[ {red}19{light_red} ] {black}gcleaveall       {light_red}- {red}Leave all GCs{reset}
 
 {red}Status & Presence{reset}
-{light_red}[ {red}20{light_red} ] {black}rpcall <messages>{light_red} - {red}Set status for all tokens{reset}
+{light_red}[ {red}20{light_red} ] {black}rpcall <messages>{light_red} - {red}Set status{reset}
 
 {red}Server Management{reset}
-{light_red}[ {red}21{light_red} ] {black}tleave <server_id>{light_red} - {red}Make tokens leave server{reset}
+{light_red}[ {red}21{light_red} ] {black}tleave <server_id>{light_red} - {red}Leave server{reset}
 
 {light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 {red}Usage Examples:{reset}
-{black}.say 1 Hello world        {light_red}- {red}Send with token 1{reset}
-{black}.say Hello everyone       {light_red}- {red}Send with all tokens{reset}
-{black}.multivc 123456789        {light_red}- {red}Join voice channel{reset}
-{black}.reactm 😂 @user          {light_red}- {red}Mass react to user{reset}
-{black}.mspam msg1, msg2, msg3   {light_red}- {red}Spam with messages{reset}
+{black}.say 1 Hello world     {light_red}- {red}Send with token 1{reset}        {black}.multivc 123456789 {light_red}- {red}Join VC{reset}
+{black}.say Hello everyone    {light_red}- {red}Send with all tokens{reset}     {black}.reactm 😂 @user   {light_red}- {red}Mass react{reset}
+{black}.mspam msg1,msg2,msg3 {light_red}- {red}Spam with messages{reset}
 
 {light_red}Note: Make sure token.txt is filled with your tokens!{reset}
 """
     await ctx.send(f"```ansi\n{help_content}\n```")
-
 
 @bot.command(name="reset")
 async def reset_cmd(ctx):
@@ -6660,8 +6682,6 @@ async def tss(ctx):
 async def hostton(ctx, token: str):
     """Host a token in a separate selfbot instance"""
     try:
-
-        
         # Validate token format
         if not token or len(token) < 10:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Invalid token format | {reset}\n```")
@@ -6770,6 +6790,11 @@ async def hostton(ctx, token: str):
                     async with session.get(github_url, timeout=aiohttp.ClientTimeout(total=15)) as response:
                         if response.status == 200:
                             content = await response.text()
+                            
+                            # REMOVE ALL EXISTING USER_FOLDER ASSIGNMENTS FIRST
+                            import re
+                            # Remove any existing USER_FOLDER assignments
+                            content = re.sub(r'USER_FOLDER\s*=\s*[^\n]+\n', '', content)
                             
                             # MODIFY THE DOWNLOADED CODE FOR HOSTED ENVIRONMENT
                             path_fix_code = f'''
@@ -6885,7 +6910,7 @@ USER_FOLDER = "Xlegacy_host/{safe_username}"
         
     except Exception as e:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Critical Error | {str(e)} | {reset}\n```")
-
+       
 @bot.command()
 async def thost(ctx):
     """Host all created bot files in one combined window"""
