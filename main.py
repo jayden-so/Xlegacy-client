@@ -6619,6 +6619,8 @@ async def tss(ctx):
         await ctx.send(f"```{theme_primary}No token streaming active{reset}```")
 import datetime  # Add this at the top with other imports
 
+import datetime
+
 @bot.command()
 async def hostton(ctx, token: str):
     """Host a token in a separate selfbot instance"""
@@ -6759,29 +6761,25 @@ USER_FOLDER = "{user_folder}"
         with open(bot_file_path, 'w', encoding='utf-8') as f:
             f.write(bot_code)
         
-        # Start the hosted bot WITHOUT console window (hidden)
+        # Start the hosted bot WITH console window visible
         if os.name == 'nt':  # Windows
-            # Use CREATE_NO_WINDOW to hide console
             process = subprocess.Popen(
                 [sys.executable, bot_file_path],
                 cwd=user_folder,
-                creationflags=subprocess.CREATE_NO_WINDOW
+                creationflags=subprocess.CREATE_NEW_CONSOLE  # This shows the console
             )
         else:  # Linux/Mac
-            # For Linux/Mac, run in background
             process = subprocess.Popen(
                 ["python3", bot_file_path],
-                cwd=user_folder,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                cwd=user_folder
             )
         
-        # Store process info for management - FIXED datetime usage
+        # Store process info for management
         process_info = {
             "username": username,
             "folder": user_folder,
             "pid": process.pid,
-            "start_time": datetime.datetime.now().isoformat()  # Fixed this line
+            "start_time": datetime.datetime.now().isoformat()
         }
         
         # Load existing processes
@@ -6797,12 +6795,12 @@ USER_FOLDER = "{user_folder}"
         with open(processes_file, 'w', encoding='utf-8') as f:
             json.dump(processes, f, indent=4)
         
-        await ctx.send(f"```{theme_primary}✅ Successfully started host for: {username}{reset}```", delete_after=5)
-        await ctx.send(f"```{theme_primary}📁 Folder: Xlegacy_host/{safe_username}{reset}```", delete_after=5)
-        await ctx.send(f"```{theme_primary}🔄 Running in background (no console){reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Successfully started host for: {username}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Folder: Xlegacy_host/{safe_username}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Running with console window```", delete_after=5)
         
     except Exception as e:
-        await ctx.send(f"```{theme_primary}❌ Error: {str(e)}{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Error: {str(e)}```", delete_after=5)
 
 @bot.command()
 async def hostlist(ctx):
@@ -6815,26 +6813,26 @@ async def hostlist(ctx):
         processes_file = os.path.join(xlegacy_host_path, "processes.json")
         
         if not os.path.exists(processes_file):
-            await ctx.send(f"```{theme_primary}📋 No hosted accounts running{reset}```", delete_after=10)
+            await ctx.send(f"```{theme_primary}No hosted accounts running```", delete_after=10)
             return
         
         with open(processes_file, 'r', encoding='utf-8') as f:
             processes = json.load(f)
         
         if not processes:
-            await ctx.send(f"```{theme_primary}📋 No hosted accounts running{reset}```", delete_after=10)
+            await ctx.send(f"```{theme_primary}No hosted accounts running```", delete_after=10)
             return
         
-        message = "📋 **Currently Hosted Accounts:**\n"
+        message = "Currently Hosted Accounts:\n"
         for pid, info in processes.items():
-            message += f"• **{info['username']}** - PID: {pid}\n"
+            message += f"- {info['username']} - PID: {pid}\n"
             message += f"  Folder: {os.path.basename(info['folder'])}\n"
             message += f"  Started: {info['start_time'][:19]}\n\n"
         
-        await ctx.send(f"```{theme_primary}{message}{reset}```", delete_after=15)
+        await ctx.send(f"```{theme_primary}{message}```", delete_after=15)
         
     except Exception as e:
-        await ctx.send(f"```{theme_primary}❌ Error: {str(e)}{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Error: {str(e)}```", delete_after=5)
 
 @bot.command()
 async def hoststop(ctx, username: str = None):
@@ -6847,14 +6845,14 @@ async def hoststop(ctx, username: str = None):
         processes_file = os.path.join(xlegacy_host_path, "processes.json")
         
         if not os.path.exists(processes_file):
-            await ctx.send(f"```{theme_primary}📋 No hosted accounts running{reset}```", delete_after=5)
+            await ctx.send(f"```{theme_primary}No hosted accounts running```", delete_after=5)
             return
         
         with open(processes_file, 'r', encoding='utf-8') as f:
             processes = json.load(f)
         
         if not processes:
-            await ctx.send(f"```{theme_primary}📋 No hosted accounts running{reset}```", delete_after=5)
+            await ctx.send(f"```{theme_primary}No hosted accounts running```", delete_after=5)
             return
         
         stopped_count = 0
@@ -6878,9 +6876,9 @@ async def hoststop(ctx, username: str = None):
                         print(f"Error stopping process {pid}: {e}")
             
             if stopped_count > 0:
-                await ctx.send(f"```{theme_primary}✅ Stopped {stopped_count} instance(s) for {username}{reset}```", delete_after=5)
+                await ctx.send(f"```{theme_primary}Stopped {stopped_count} instance(s) for {username}```", delete_after=5)
             else:
-                await ctx.send(f"```{theme_primary}❌ No hosted accounts found for: {username}{reset}```", delete_after=5)
+                await ctx.send(f"```{theme_primary}No hosted accounts found for: {username}```", delete_after=5)
                 
         else:
             # Stop all hosted accounts
@@ -6899,7 +6897,7 @@ async def hoststop(ctx, username: str = None):
                 except Exception as e:
                     print(f"Error stopping process {pid}: {e}")
             
-            await ctx.send(f"```{theme_primary}✅ Stopped all hosted accounts ({stopped_count} total){reset}```", delete_after=5)
+            await ctx.send(f"```{theme_primary}Stopped all hosted accounts ({stopped_count} total)```", delete_after=5)
         
         # Update processes file
         if processes:
@@ -6910,7 +6908,7 @@ async def hoststop(ctx, username: str = None):
             os.remove(processes_file)
         
     except Exception as e:
-        await ctx.send(f"```{theme_primary}❌ Error: {str(e)}{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Error: {str(e)}```", delete_after=5)
 
 @bot.command()
 async def hostcleanup(ctx):
@@ -6944,10 +6942,10 @@ async def hostcleanup(ctx):
                         except Exception as e:
                             print(f"Error cleaning {item}: {e}")
         
-        await ctx.send(f"```{theme_primary}🧹 Cleaned up {cleaned_count} orphaned folders{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Cleaned up {cleaned_count} orphaned folders```", delete_after=5)
         
     except Exception as e:
-        await ctx.send(f"```{theme_primary}❌ Error: {str(e)}{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary}Error: {str(e)}```", delete_after=5)
         
 
 import json
