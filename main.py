@@ -3111,16 +3111,11 @@ async def laz(ctx, user: discord.User, name1: str, name2: str = None):
     
     laz_tasks[channel_id] = tasks
     await ctx.send(f"```ansi\n{red} XLEGACY | LAZ SPAM STARTED | USE .ENDLAZ TO STOP |  {reset}\n```")
-
 @bot.command()
 async def endlaz(ctx):
     channel_id = ctx.channel.id
     
     if channel_id not in laz_running or not laz_running[channel_id]:
-        try:
-    
-        except:
-            pass
         await ctx.send(f"```ansi\n{red} XLEGACY | NO LAZ COMMAND RUNNING |  {reset}\n```")
         return
     
@@ -3130,15 +3125,10 @@ async def endlaz(ctx):
         for task in laz_tasks[channel_id]:
             task.cancel()
         del laz_tasks[channel_id]
-    
-    try:
-
-    except:
-        pass
         
     try:
         await ctx.send(f"```ansi\n{red} XLEGACY | LAZ COMMAND STOPPED |  {reset}\n```")
-    except:
+    except Exception:
         pass
 
 @bot.command()
