@@ -15,8 +15,6 @@ from discord.ext import commands
 import json
 import colorama
 colorama.init()
-import datetime
-import shutil
 import json
 import os
 import re
@@ -6800,13 +6798,12 @@ USER_FOLDER = "{user_folder}"
         with open(processes_file, 'w', encoding='utf-8') as f:
             json.dump(processes, f, indent=4)
         
-        await ctx.send(f"```{theme_primary}✅ Successfully started host for: {username}{reset}```", delete_after=5)
-        await ctx.send(f"```{theme_primary}📁 Folder: Xlegacy_host/{safe_username}{reset}```", delete_after=5)
-        await ctx.send(f"```{theme_primary}🔄 Running in background (no console){reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary} Successfully started host for: {username}{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary} Folder: Xlegacy_host/{safe_username}{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary} Running in background {reset}```", delete_after=5)
         
     except Exception as e:
-        await ctx.send(f"```{theme_primary}❌ Error: {str(e)}{reset}```", delete_after=5)
-
+        await ctx.send(f"```{theme_primary} Error: {str(e)}{reset}```", delete_after=5)
 @bot.command()
 async def hostlist(ctx):
     """List all currently hosted accounts"""
@@ -6818,17 +6815,17 @@ async def hostlist(ctx):
         processes_file = os.path.join(xlegacy_host_path, "processes.json")
         
         if not os.path.exists(processes_file):
-            await ctx.send(f"```{theme_primary}📋 No hosted accounts running{reset}```", delete_after=10)
+            await ctx.send(f"```{theme_primary} No hosted accounts running{reset}```", delete_after=10)
             return
         
         with open(processes_file, 'r', encoding='utf-8') as f:
             processes = json.load(f)
         
         if not processes:
-            await ctx.send(f"```{theme_primary}📋 No hosted accounts running{reset}```", delete_after=10)
+            await ctx.send(f"```{theme_primary} No hosted accounts running{reset}```", delete_after=10)
             return
         
-        message = "📋 **Currently Hosted Accounts:**\n"
+        message = " Currently Hosted Accounts:\n"
         for pid, info in processes.items():
             message += f"• **{info['username']}** - PID: {pid}\n"
             message += f"  Folder: {os.path.basename(info['folder'])}\n"
@@ -6837,7 +6834,7 @@ async def hostlist(ctx):
         await ctx.send(f"```{theme_primary}{message}{reset}```", delete_after=15)
         
     except Exception as e:
-        await ctx.send(f"```{theme_primary}❌ Error: {str(e)}{reset}```", delete_after=5)
+        await ctx.send(f"```{theme_primary} Error: {str(e)}{reset}```", delete_after=5)
 
 @bot.command()
 async def hoststop(ctx, username: str = None):
@@ -6881,9 +6878,9 @@ async def hoststop(ctx, username: str = None):
                         print(f"Error stopping process {pid}: {e}")
             
             if stopped_count > 0:
-                await ctx.send(f"```{theme_primary}✅ Stopped {stopped_count} instance(s) for {username}{reset}```", delete_after=5)
+                await ctx.send(f"```{theme_primary} Stopped {stopped_count} instance(s) for {username}{reset}```", delete_after=5)
             else:
-                await ctx.send(f"```{theme_primary}❌ No hosted accounts found for: {username}{reset}```", delete_after=5)
+                await ctx.send(f"```{theme_primary} No hosted accounts found for: {username}{reset}```", delete_after=5)
                 
         else:
             # Stop all hosted accounts
