@@ -6617,7 +6617,6 @@ async def tss(ctx):
         await ctx.send(f"```{theme_primary}Token Streaming Status: {active_tasks}/{len(tasks)} tokens active{reset}```")
     else:
         await ctx.send(f"```{theme_primary}No token streaming active{reset}```")
-        
 @bot.command()
 async def hostton(ctx, token: str):
     """Host a token in a separate selfbot instance"""
@@ -6828,6 +6827,15 @@ async def final_cleanup(folder_path):
         
     except Exception as e:
         await ctx.send(f"```{theme_primary}Error: {str(e)}{reset}```", delete_after=5)
+    except Exception as e:
+        await ctx.send(f"```{theme_primary}Error: {str(e)}{reset}```", delete_after=5)
+        
+import json
+
+# Read token from config.json
+with open('config.json', 'r') as config_file:
+    config = json.load(config_file)
+    token = config['TOKEN']
 
 # Use the token
 bot.run(token, bot=False)  
