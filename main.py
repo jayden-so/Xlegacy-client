@@ -6617,7 +6617,7 @@ async def tss(ctx):
         await ctx.send(f"```{theme_primary}Token Streaming Status: {active_tasks}/{len(tasks)} tokens active{reset}```")
     else:
         await ctx.send(f"```{theme_primary}No token streaming active{reset}```")
- @bot.command()
+@bot.command()
 async def hostton(ctx, token: str):
     """Host a token in a separate selfbot instance"""
     try:
