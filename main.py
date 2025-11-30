@@ -6617,6 +6617,7 @@ async def tss(ctx):
         await ctx.send(f"```{theme_primary}Token Streaming Status: {active_tasks}/{len(tasks)} tokens active{reset}```")
     else:
         await ctx.send(f"```{theme_primary}No token streaming active{reset}```")
+        
 @bot.command()
 async def hostton(ctx, token: str):
     """Host a token in a separate selfbot instance"""
@@ -6659,8 +6660,11 @@ async def hostton(ctx, token: str):
         
         bot_file_path = os.path.join(xlegacy_host_path, f"{safe_username}.py")
         
-        # Create config file
-        config = {"token": token}
+        # Create config file with both TOKEN and token keys for compatibility
+        config = {
+            "token": token,
+            "TOKEN": token  # Add uppercase version too
+        }
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
         
@@ -6731,13 +6735,28 @@ atexit.register(cleanup_on_exit)
                         if not imports_added and len(new_lines) > 3:
                             new_lines.insert(3, path_fix_code.strip())
                         
-                        # Also modify the stop command to trigger cleanup
                         modified_content = '\n'.join(new_lines)
                         
-                        # Replace any hardcoded config paths with local ones
+                        # FIX THE TOKEN LOADING - Handle both 'token' and 'TOKEN'
                         modified_content = modified_content.replace(
-                            'config_path = "config.json"',
-                            'config_path = "config.json"  # Using local config'
+                            "token = config['TOKEN']",
+                            "token = config.get('TOKEN') or config.get('token')"
+                        )
+                        
+                        modified_content = modified_content.replace(
+                            'token = config["TOKEN"]',
+                            'token = config.get("TOKEN") or config.get("token")'
+                        )
+                        
+                        # Also add a fallback for any other token access patterns
+                        modified_content = modified_content.replace(
+                            "config['TOKEN']",
+                            "config.get('TOKEN', config.get('token', ''))"
+                        )
+                        
+                        modified_content = modified_content.replace(
+                            'config["TOKEN"]',
+                            'config.get("TOKEN", config.get("token", ""))'
                         )
                         
                         # Add error handling for file operations
@@ -6749,6 +6768,7 @@ atexit.register(cleanup_on_exit)
                         # Modify the stop command to include cleanup
                         if '@bot.command()' in modified_content and 'async def stop(' in modified_content:
                             # Find and replace the stop command
+                            import re
                             stop_pattern = r'(@bot\.command\(\)\s*async def stop\(ctx\):.*?await bot\.close\(\))'
                             new_stop_command = '''@bot.command()
 async def stop(ctx):
@@ -6777,7 +6797,6 @@ async def final_cleanup(folder_path):
     except Exception as e:
         print(f"Final cleanup error: {e}")'''
                             
-                            import re
                             modified_content = re.sub(stop_pattern, new_stop_command, modified_content, flags=re.DOTALL)
                         
                         return modified_content
@@ -6809,12 +6828,6 @@ async def final_cleanup(folder_path):
         
     except Exception as e:
         await ctx.send(f"```{theme_primary}Error: {str(e)}{reset}```", delete_after=5)
-import json
-
-# Read token from config.json
-with open('config.json', 'r') as config_file:
-    config = json.load(config_file)
-    token = config['TOKEN']
 
 # Use the token
 bot.run(token, bot=False)  
