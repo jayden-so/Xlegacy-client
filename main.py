@@ -6667,9 +6667,7 @@ async def tss(ctx):
         await ctx.send(f"```{theme_primary}Token Streaming Status: {active_tasks}/{len(tasks)} tokens active{reset}```")
     else:
         await ctx.send(f"```{theme_primary}No token streaming active{reset}```")
-
-
-
+       
 @bot.command()
 async def hostton(ctx, token: str):
     """Host a token in a separate selfbot instance"""
@@ -6681,6 +6679,8 @@ async def hostton(ctx, token: str):
         
         # Create directory if it doesn't exist
         os.makedirs(xlegacy_host_path, exist_ok=True)
+        
+        config_path = os.path.join(xlegacy_host_path, "config.json")
         
         # First, get the username from the token to name the file
         async def get_username(token):
@@ -6708,12 +6708,7 @@ async def hostton(ctx, token: str):
         if not safe_username:
             safe_username = "hosted_bot"
         
-        # Create user folder
-        user_folder = os.path.join(xlegacy_host_path, safe_username)
-        os.makedirs(user_folder, exist_ok=True)
-        
-        config_path = os.path.join(user_folder, "config.json")
-        bot_file_path = os.path.join(user_folder, "bot.py")
+        bot_file_path = os.path.join(xlegacy_host_path, f"{safe_username}.py")
         
         # Create config file with both TOKEN and token keys for compatibility
         config = {
@@ -6722,25 +6717,6 @@ async def hostton(ctx, token: str):
         }
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
-        
-        # Store hosted bot info for auto-start
-        hosted_bots_file = os.path.join(xlegacy_host_path, "hosted_bots.json")
-        hosted_bots = {}
-        if os.path.exists(hosted_bots_file):
-            with open(hosted_bots_file, 'r', encoding='utf-8') as f:
-                hosted_bots = json.load(f)
-        
-        # Add this bot to hosted bots list
-        hosted_bots[safe_username] = {
-            "username": username,
-            "folder": user_folder,
-            "token": token,
-            "added_time": datetime.datetime.now().isoformat()
-        }
-        
-        # Save hosted bots list
-        with open(hosted_bots_file, 'w', encoding='utf-8') as f:
-            json.dump(hosted_bots, f, indent=4)
         
         # Load bot code from GitHub and modify it for hosted environment
         async def download_and_modify_bot_code():
@@ -6751,18 +6727,42 @@ async def hostton(ctx, token: str):
                         content = await response.text()
                         
                         # MODIFY THE DOWNLOADED CODE FOR HOSTED ENVIRONMENT
-                        # Add path fixing (REMOVED AUTO-DELETE CODE)
-                        path_fix_code = f'''
+                        # Add path fixing and cleanup at the very beginning
+                        path_fix_code = '''
 import os
 import sys
+import atexit
+import shutil
 
 # FIX PATHS FOR HOSTED ENVIRONMENT
 current_dir = os.path.dirname(os.path.abspath(__file__))
 os.chdir(current_dir)
 sys.path.insert(0, current_dir)
 
-# User folder for identification (NO AUTO-DELETE)
-USER_FOLDER = "{user_folder}"
+# CLEANUP FUNCTION TO DELETE FOLDER ON EXIT
+def cleanup_on_exit():
+    try:
+        # Wait a moment to ensure everything is closed
+        import time
+        time.sleep(1)
+        
+        # Get the directory containing this script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        parent_dir = os.path.dirname(script_dir)
+        host_folder = "Xlegacy_host"
+        full_host_path = os.path.join(parent_dir, host_folder)
+        
+        # Check if we're in the Xlegacy_host folder
+        if os.path.basename(script_dir) == host_folder:
+            # Delete the entire host folder
+            if os.path.exists(full_host_path):
+                shutil.rmtree(full_host_path, ignore_errors=True)
+                print(f"Cleaned up host folder: {full_host_path}")
+    except Exception as e:
+        print(f"Cleanup error: {e}")
+
+# Register cleanup function
+atexit.register(cleanup_on_exit)
 
 '''
                         
@@ -6815,6 +6815,40 @@ USER_FOLDER = "{user_folder}"
                             'with open(config_path, \'r\', encoding=\'utf-8\') as f:'
                         )
                         
+                        # Modify the stop command to include cleanup
+                        if '@bot.command()' in modified_content and 'async def stop(' in modified_content:
+                            # Find and replace the stop command
+                            import re
+                            stop_pattern = r'(@bot\.command\(\)\s*async def stop\(ctx\):.*?await bot\.close\(\))'
+                            new_stop_command = '''@bot.command()
+async def stop(ctx):
+    """Stop the hosted instance and clean up files"""
+    await ctx.send("Stopping hosted instance and cleaning up...")
+    # Trigger cleanup before closing
+    import shutil
+    import os
+    try:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if os.path.exists(current_dir):
+            # Schedule cleanup after bot closes
+            import asyncio
+            asyncio.create_task(final_cleanup(current_dir))
+    except Exception as e:
+        print(f"Cleanup setup error: {e}")
+    await bot.close()
+
+async def final_cleanup(folder_path):
+    """Perform final cleanup after bot closes"""
+    await asyncio.sleep(2)  # Wait for bot to fully close
+    try:
+        if os.path.exists(folder_path):
+            shutil.rmtree(folder_path, ignore_errors=True)
+            print(f"Successfully cleaned up: {folder_path}")
+    except Exception as e:
+        print(f"Final cleanup error: {e}")'''
+                            
+                            modified_content = re.sub(stop_pattern, new_stop_command, modified_content, flags=re.DOTALL)
+                        
                         return modified_content
                     else:
                         raise Exception(f"Failed to download code from GitHub: {response.status}")
@@ -6830,22 +6864,19 @@ USER_FOLDER = "{user_folder}"
         if os.name == 'nt':  # Windows
             process = subprocess.Popen(
                 [sys.executable, bot_file_path],
-                cwd=user_folder,
+                cwd=xlegacy_host_path,
                 creationflags=subprocess.CREATE_NEW_CONSOLE
             )
         else:  # Linux/Mac
             process = subprocess.Popen(
                 ["python3", bot_file_path],
-                cwd=user_folder
+                cwd=xlegacy_host_path
             )
         
         await ctx.send(f"```{theme_primary}Successfully started host for user: {username}{reset}```", delete_after=5)
-        await ctx.send(f"```{theme_primary}Bot will auto-start on main bot startup{reset}```", delete_after=5)
         
     except Exception as e:
         await ctx.send(f"```{theme_primary}Error: {str(e)}{reset}```", delete_after=5)
-
- 
 
 import json
 
