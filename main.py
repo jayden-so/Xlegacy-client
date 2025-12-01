@@ -14,6 +14,13 @@ import os
 from discord.ext import commands
 import json
 import colorama
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import asyncio
+import threading
 colorama.init()
 import json
 import os
@@ -475,6 +482,17 @@ async def on_ready():
     for line in spider_art:
         centered_line = line.center(terminal_width)
         print(f"{theme_primary}{centered_line}{reset}")
+
+    if auto_rpc_enabled and token_rpc_configs:
+        print(f"{theme_primary}Auto-starting RPC for {len(token_rpc_configs)} tokens...{reset}")
+        for token_key, config_data in token_rpc_configs.items():
+            if config_data['configs'] and not config_data['enabled']:
+                config_data['enabled'] = True
+                task = asyncio.create_task(rotate_token_rpc(token_key, config_data))
+                token_rpc_tasks[token_key] = task
+                await apply_token_rpc(config_data['token'], config_data['configs'][0])
+        
+        print(f"{theme_primary}Auto RPC started for {len(token_rpc_tasks)} tokens{reset}")
 
     # STARTING THE BOT
     print(f"\n{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}")
@@ -6969,38 +6987,1549 @@ async def thost(ctx):
                     time.sleep(1)
                     if process.poll() is None:  # Still running
                         started_count += 1
-                        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Started Bot | {user_folder} | {reset}\n```", delete_after=3)
+                        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Started | {user_folder} | {reset}\n```", delete_after=3)
                     else:
                         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Failed to Start | {user_folder} | {reset}\n```", delete_after=3)
                 
             except Exception as e:
                 await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error Starting | {user_folder}: {str(e)} | {reset}\n```", delete_after=3)
         
-        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Combined Host Complete | {started_count}/{len(user_folders)} started | {reset}\n```")
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY |  Host Complete | {started_count}/{len(user_folders)} started | {reset}\n```")
         
     except Exception as e:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Critical Error | {str(e)} | {reset}\n```")
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
+import asyncio
+import random
+import os
 import json
+import time
+
+@bot.command(name='manual_register')
+async def manual_register(ctx, count: int = 1):
+    """Automated Discord registration using Selenium"""
+    try:
+        # Authorization check
+        if ctx.author.id != bot.user.id:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | UNAUTHORIZED |  {reset}\n```")
+            return
+        
+        if count > 3:  # Limit to prevent overload
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | MAX 3 ACCOUNTS PER COMMAND |  {reset}\n```")
+            return
+        
+        # Read emails from file
+        email_file = "emails.txt"
+        token_file = "tokens.txt"
+        
+        if not os.path.exists(email_file):
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | EMAILS FILE NOT FOUND |  {reset}\n```")
+            return
+        
+        with open(email_file, 'r', encoding='utf-8') as f:
+            emails = [line.strip() for line in f if line.strip()]
+        
+        if len(emails) < count:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NOT ENOUGH EMAILS | NEED {count}, HAVE {len(emails)} |  {reset}\n```")
+            return
+        
+        status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | STARTING AUTOMATED REGISTRATION | {count} ACCOUNTS |  {reset}\n```")
+        
+        # Run automation in the main event loop
+        successful_tokens = await automated_registration_task(ctx, emails[:count], status_msg)
+        
+        # Final summary
+        final_msg = f"```ansi\n{theme_primary} AUTOMATED REGISTRATION COMPLETE {reset}\n{theme_secondary}Successful: {len(successful_tokens)}/{count}{reset}\n{theme_secondary}Tokens saved to: {token_file}{reset}"
+        
+        if successful_tokens:
+            final_msg += f"\n\n{theme_primary}Generated Tokens:{reset}"
+            for j, token in enumerate(successful_tokens, 1):
+                final_msg += f"\n{theme_secondary}[{theme_primary}{j}{theme_secondary}] {theme_accent}{token[:25]}...{reset}"
+        
+        final_msg += "```"
+        
+        await status_msg.edit(content=final_msg)
+        
+        # Remove used emails from file
+        remaining_emails = emails[len(successful_tokens):]
+        with open("emails.txt", "w", encoding="utf-8") as f:
+            for email in remaining_emails:
+                f.write(email + "\n")
+        
+    except Exception as e:
+        print(f"{theme_secondary}[AUTOMATION ERROR] {e}{reset}")
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | ERROR: {e} |  {reset}\n```")
+
+async def automated_registration_task(ctx, emails, status_msg):
+    """Run automated registration for each email"""
+    successful_tokens = []
+    
+    for i, email in enumerate(emails):
+        try:
+            await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | PROCESSING ACCOUNT {i+1}/{len(emails)} | {email} |  {reset}\n```")
+            
+            # Run Selenium in a thread to avoid blocking
+            token = await asyncio.get_event_loop().run_in_executor(
+                None, 
+                lambda e=email, idx=i: run_selenium_automation(e, idx)
+            )
+            
+            if token:
+                successful_tokens.append(token)
+                # Save token immediately
+                with open("tokens.txt", "a", encoding="utf-8") as f:
+                    f.write(f"{token}\n")
+                
+                await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | ACCOUNT {i+1} SUCCESS | TOKEN SAVED |  {reset}\n```")
+                print(f"{theme_primary}[SUCCESS] Account {i+1} created: {token[:30]}...{reset}")
+            else:
+                await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | ACCOUNT {i+1} FAILED | {email} |  {reset}\n```")
+                print(f"{theme_secondary}[FAILED] Account {i+1} failed: {email}{reset}")
+                
+            # Wait between registrations
+            await asyncio.sleep(5)
+            
+        except Exception as e:
+            print(f"{theme_secondary}[ACCOUNT ERROR {i+1}] {e}{reset}")
+            await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | ACCOUNT {i+1} ERROR | {str(e)} |  {reset}\n```")
+    
+    return successful_tokens
+
+def run_selenium_automation(email, index):
+    """Run Selenium automation in a synchronous function"""
+    driver = None
+    try:
+        # Chrome options for automation with network logging
+        chrome_options = Options()
+        
+        # Enable performance logging for network requests
+        chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
+        
+        # Standard Chrome options
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        
+        # Remove headless for manual CAPTCHA solving
+        # chrome_options.add_argument("--headless")  # Keep commented out for manual CAPTCHA
+        
+        # Initialize driver
+        try:
+            driver = webdriver.Chrome(options=chrome_options)
+        except Exception as e:
+            print(f"{theme_secondary}[CHROMEDRIVER ERROR] {e}{reset}")
+            print(f"{theme_secondary}[INFO] Make sure chromedriver is installed and in PATH{reset}")
+            return None
+            
+        # Hide automation indicators
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        # Navigate to Discord register page
+        print(f"{theme_primary}[BROWSER {index+1}] Opening Discord registration...{reset}")
+        driver.get("https://discord.com/register")
+        
+        # Wait for page to load
+        wait = WebDriverWait(driver, 10)
+        
+        # Generate credentials
+        username = f"Xlegacy_{random.randint(100000, 999999)}"
+        password = "XLEGACY22"
+        
+        print(f"{theme_primary}[CREDENTIALS {index+1}] Email: {email} | Username: {username} | Password: {password}{reset}")
+        
+        # Fill registration form
+        try:
+            # Wait for and fill email field
+            email_field = wait.until(EC.presence_of_element_located((By.NAME, "email")))
+            email_field.clear()
+            email_field.send_keys(email)
+            
+            # Fill username field
+            username_field = driver.find_element(By.NAME, "username")
+            username_field.clear()
+            username_field.send_keys(username)
+            
+            # Fill password field
+            password_field = driver.find_element(By.NAME, "password")
+            password_field.clear()
+            password_field.send_keys(password)
+            
+            print(f"{theme_primary}[FORM {index+1}] Registration form filled successfully{reset}")
+            
+        except Exception as e:
+            print(f"{theme_secondary}[FORM ERROR {index+1}] Could not fill form: {e}{reset}")
+            return None
+        
+        # Wait for manual CAPTCHA completion
+        print(f"{theme_primary}[WAITING {index+1}] Please complete CAPTCHA manually...{reset}")
+        print(f"{theme_primary}[INFO {index+1}] Browser will stay open for CAPTCHA completion{reset}")
+        
+        # Clear any existing logs before waiting for login
+        if driver:
+            driver.get_log('performance')
+        
+        # Wait for user to complete CAPTCHA and registration
+        logged_in = False
+        token = None
+        
+        for wait_time in range(300):  # Wait up to 5 minutes (300 seconds)
+            try:
+                current_url = driver.current_url
+                # Check if we're logged in (on main app)
+                if "channels" in current_url or "@me" in current_url or "activity" in current_url:
+                    logged_in = True
+                    print(f"{theme_primary}[SUCCESS {index+1}] Detected successful login{reset}")
+                    
+                    # Try to extract token from network requests
+                    token = extract_token_from_network_logs(driver)
+                    if token:
+                        break
+                    
+                    # If no token found yet, try to interact with the page to generate network traffic
+                    try:
+                        # Wait a bit for initial requests to complete
+                        time.sleep(3)
+                        token = extract_token_from_network_logs(driver)
+                        if token:
+                            break
+                            
+                        # Try JavaScript extraction as fallback
+                        token = extract_token_with_js(driver)
+                        if token:
+                            break
+                    except Exception as e:
+                        print(f"{theme_secondary}[INTERACTION ERROR {index+1}] {e}{reset}")
+                    
+                    break
+                
+                # Check for login success indicators
+                if len(driver.find_elements(By.XPATH, "//div[contains(@class, 'application')]")) > 0:
+                    logged_in = True
+                    print(f"{theme_primary}[SUCCESS {index+1}] Detected app loaded{reset}")
+                    
+                    # Extract token
+                    token = extract_token_from_network_logs(driver)
+                    if not token:
+                        token = extract_token_with_js(driver)
+                    break
+                    
+            except Exception as e:
+                pass
+            
+            time.sleep(1)
+            
+            # Show progress every 30 seconds
+            if wait_time % 30 == 0:
+                print(f"{theme_primary}[WAITING {index+1}] Still waiting... {wait_time}s elapsed{reset}")
+        
+        if not logged_in:
+            print(f"{theme_secondary}[TIMEOUT {index+1}] Registration not completed in time{reset}")
+            return None
+        
+        if not token:
+            # Final attempt to get token
+            print(f"{theme_primary}[FINAL ATTEMPT {index+1}] Trying to extract token...{reset}")
+            token = extract_token_from_network_logs(driver)
+            if not token:
+                token = extract_token_with_js(driver)
+        
+        if token:
+            print(f"{theme_primary}[TOKEN {index+1}] Successfully extracted token: {token[:30]}...{reset}")
+            return token
+        else:
+            print(f"{theme_secondary}[TOKEN ERROR {index+1}] Could not extract token{reset}")
+            return None
+            
+    except Exception as e:
+        print(f"{theme_secondary}[AUTOMATION ERROR {index+1}] {e}{reset}")
+        return None
+    finally:
+        if driver:
+            driver.quit()
+
+def extract_token_from_network_logs(driver):
+    """Extract Discord token from network request logs"""
+    try:
+        # Get performance logs
+        logs = driver.get_log('performance')
+        
+        for log_entry in logs:
+            try:
+                log_data = json.loads(log_entry['message'])
+                message = log_data.get('message', {})
+                
+                if message.get('method') == 'Network.requestWillBeSent':
+                    request = message.get('params', {}).get('request', {})
+                    headers = request.get('headers', {})
+                    
+                    # Check for authorization header
+                    auth_header = headers.get('Authorization') or headers.get('authorization')
+                    if auth_header and auth_header.startswith('Bearer '):
+                        token = auth_header.replace('Bearer ', '').strip()
+                        if len(token) > 50:  # Discord tokens are typically ~59 chars
+                            print(f"{theme_primary}[NETWORK TOKEN FOUND] Length: {len(token)}{reset}")
+                            return token
+                    
+                    # Also check for specific Discord API endpoints
+                    url = request.get('url', '')
+                    if 'discord.com/api' in url and ('messages' in url or 'users' in url or 'channels' in url):
+                        auth_header = headers.get('Authorization') or headers.get('authorization')
+                        if auth_header and auth_header.startswith('Bearer '):
+                            token = auth_header.replace('Bearer ', '').strip()
+                            if len(token) > 50:
+                                print(f"{theme_primary}[API TOKEN FOUND] From: {url}{reset}")
+                                return token
+                                
+            except Exception as e:
+                continue
+        
+        return None
+        
+    except Exception as e:
+        print(f"{theme_secondary}[NETWORK EXTRACTION ERROR] {e}{reset}")
+        return None
+
+def extract_token_with_js(driver):
+    """Alternative method to extract token using JavaScript (fallback)"""
+    try:
+        # Try multiple methods to extract token
+        token_scripts = [
+            # Method 1: Local Storage
+            """
+            for (let key in window.localStorage) {
+                if (key.includes('token') || key.toLowerCase().includes('auth')) {
+                    let token = window.localStorage[key];
+                    if (token && token.length > 50) {
+                        return token;
+                    }
+                }
+            }
+            return null;
+            """,
+            
+            # Method 2: Session Storage
+            """
+            for (let key in window.sessionStorage) {
+                if (key.includes('token') || key.toLowerCase().includes('auth')) {
+                    let token = window.sessionStorage[key];
+                    if (token && token.length > 50) {
+                        return token;
+                    }
+                }
+            }
+            return null;
+            """,
+            
+            # Method 3: Try to find token in indexedDB (advanced)
+            """
+            return new Promise((resolve) => {
+                try {
+                    const request = window.indexedDB.open('discord');
+                    request.onsuccess = function(event) {
+                        const db = event.target.result;
+                        const transaction = db.transaction(['objects'], 'readonly');
+                        const store = transaction.objectStore('objects');
+                        const request = store.getAll();
+                        request.onsuccess = function() {
+                            for (let item of request.result) {
+                                if (item && item.value && typeof item.value === 'string' && item.value.length > 50) {
+                                    resolve(item.value);
+                                    return;
+                                }
+                            }
+                            resolve(null);
+                        };
+                        request.onerror = () => resolve(null);
+                    };
+                    request.onerror = () => resolve(null);
+                } catch(e) {
+                    resolve(null);
+                }
+            });
+            """
+        ]
+        
+        for script in token_scripts:
+            try:
+                # For async scripts (like indexedDB), use execute_async_script
+                if 'Promise' in script or 'async' in script:
+                    token = driver.execute_async_script(script)
+                else:
+                    token = driver.execute_script(script)
+                    
+                if token and len(token) > 50:
+                    print(f"{theme_primary}[JS TOKEN EXTRACTED] Length: {len(token)}{reset}")
+                    return token
+            except Exception as e:
+                continue
+        
+        return None
+        
+    except Exception as e:
+        print(f"{theme_secondary}[JS EXTRACTION ERROR] {e}{reset}")
+        return None
+
+@bot.command(name='test_selenium')
+async def test_selenium(ctx):
+    """Test Selenium and ChromeDriver setup"""
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: test_selenium_sync()
+        )
+        
+        await ctx.send(f"```ansi\n{theme_primary} SELENIUM TEST SUCCESSFUL | {result} |  {reset}\n```")
+        
+    except Exception as e:
+        await ctx.send(f"```ansi\n{theme_primary} SELENIUM TEST FAILED | {str(e)} |  {reset}\n```")
+
+def test_selenium_sync():
+    """Synchronous Selenium test"""
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    
+    try:
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.get("https://www.google.com")
+        title = driver.title
+        driver.quit()
+        return f"Success - Page title: {title}"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+@bot.command(name='quick_register')
+async def quick_register(ctx, count: int = 1):
+    """Simplified version for testing"""
+    try:
+        if count > 2:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | MAX 2 FOR TESTING |  {reset}\n```")
+            return
+            
+        status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | STARTING QUICK REGISTRATION |  {reset}\n```")
+        
+        with open("emails.txt", "r", encoding="utf-8") as f:
+            emails = [line.strip() for line in f if line.strip()]
+        
+        if not emails:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO EMAILS FOUND |  {reset}\n```")
+            return
+            
+        email = emails[0]
+        
+        token = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: run_selenium_automation(email, 0)
+        )
+        
+        if token:
+            with open("tokens.txt", "a", encoding="utf-8") as f:
+                f.write(token + "\n")
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | SUCCESS | TOKEN SAVED |  {reset}\n```")
+        else:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | FAILED | CHECK CONSOLE |  {reset}\n```")
+            
+    except Exception as e:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | ERROR: {e} |  {reset}\n```")
+
+@bot.command(name='setup_guide')
+async def setup_guide(ctx):
+    """Updated ChromeDriver setup instructions"""
+    guide = f"""```ansi
+{theme_primary} CHROMEDRIVER SETUP GUIDE {reset}
+
+{theme_secondary}1. Install ChromeDriver:{reset}
+{theme_primary}   - Download from: https://chromedriver.chromium.org/{reset}
+{theme_primary}   - Choose version matching your Chrome browser{reset}
+{theme_primary}   - Check Chrome version: chrome://version/{reset}
+{theme_primary}   - Extract chromedriver.exe to a folder{reset}
+
+{theme_secondary}2. Add to PATH:{reset}
+{theme_primary}   Windows:{reset}
+{theme_primary}   - Right-click This PC → Properties → Advanced system settings{reset}
+{theme_primary}   - Environment Variables → System Variables → Path → Edit{reset}
+{theme_primary}   - Add folder path containing chromedriver.exe{reset}
+
+{theme_primary}   OR place chromedriver.exe in:{reset}
+{theme_primary}   C:\\\\Windows\\\\System32\\\\{reset}
+
+{theme_secondary}3. Install required packages:{reset}
+{theme_primary}   pip install selenium{reset}
+
+{theme_secondary}4. Test installation:{reset}
+{theme_primary}   .test_selenium{reset}
+
+{theme_secondary}5. Usage:{reset}
+{theme_primary}   .quick_register - Test with 1 account{reset}
+{theme_primary}   .manual_register 2 - Register 2 accounts{reset}
+
+{theme_secondary}What it does:{reset}
+{theme_primary}   - Opens Chrome automatically{reset}
+{theme_primary}   - Fills email, username, password{reset}
+{theme_primary}   - Waits for manual CAPTCHA{reset}
+{theme_primary}   - Extracts token after login{reset}
+{theme_primary}   - Saves to tokens.txt{reset}
+
+{theme_secondary}Note:{reset}
+{theme_primary}   Keep browser window visible for CAPTCHA{reset}
+{theme_primary}   Complete CAPTCHA within 5 minutes{reset}
+```"""
+    await ctx.send(guide)
+
+
+@bot.command()
+async def tadd(ctx, *, token: str = None):
+    """Add a token to token.txt file"""
+    if token is None:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | USAGE: .tadd <token> |  {reset}\n```")
+        return
+    
+    # Validate token format (basic check)
+    if len(token) < 50:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN FORMAT |  {reset}\n```")
+        return
+    
+    try:
+        # Check if token already exists
+        existing_tokens = load_tokens()
+        if token in existing_tokens:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | TOKEN ALREADY EXISTS |  {reset}\n```")
+            return
+        
+        # Add token to file
+        with open('token.txt', 'a', encoding='utf-8') as f:
+            f.write(f"{token}\n")
+        
+        # Verify token was added
+        updated_tokens = load_tokens()
+        if token in updated_tokens:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | TOKEN ADDED SUCCESSFULLY | TOTAL: {len(updated_tokens)} |  {reset}\n```")
+        else:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | ERROR ADDING TOKEN |  {reset}\n```")
+            
+    except Exception as e:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | ERROR: {str(e)} |  {reset}\n```")
+@bot.command()
+async def tpfp(ctx, image_url: str = None, token_input: str = None):
+    """Change profile picture for token(s)"""
+    if image_url is None:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | USAGE: .tpfp <image_url> [token_number/all] |  {reset}\n```")
+        return
+    
+    tokens = load_tokens()
+    
+    if not tokens:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
+        return
+    
+    # Determine which tokens to use
+    selected_tokens = []
+    
+    if token_input is None or token_input.lower() == 'all':
+        selected_tokens = tokens
+    else:
+        try:
+            token_index = int(token_input) - 1
+            if 0 <= token_index < len(tokens):
+                selected_tokens = [tokens[token_index]]
+            else:
+                await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN NUMBER |  {reset}\n```")
+                return
+        except ValueError:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN INPUT | USE NUMBER OR 'ALL' |  {reset}\n```")
+            return
+    
+    status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | VALIDATING TOKENS |  {reset}\n```")
+    
+    # First, validate which tokens are actually working
+    valid_tokens = []
+    
+    async def validate_token(token, index):
+        headers = {
+            'Authorization': token,
+            'Content-Type': 'application/json'
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    'https://discord.com/api/v9/users/@me',
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status == 200:
+                        user_data = await resp.json()
+                        valid_tokens.append({
+                            'token': token,
+                            'username': f"{user_data['username']}#{user_data.get('discriminator', '0000')}",
+                            'index': index
+                        })
+                        return True
+                    else:
+                        print(f"{theme_secondary}[INVALID] Token {index+1}: Status {resp.status}{reset}")
+                        return False
+        except Exception as e:
+            print(f"{theme_secondary}[ERROR] Token {index+1}: {str(e)}{reset}")
+            return False
+    
+    # Validate all tokens
+    validation_tasks = []
+    for i, token in enumerate(selected_tokens):
+        task = asyncio.create_task(validate_token(token, i))
+        validation_tasks.append(task)
+    
+    await asyncio.gather(*validation_tasks)
+    
+    if not valid_tokens:
+        await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | NO VALID TOKENS FOUND |  {reset}\n```")
+        return
+    
+    await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | DOWNLOADING IMAGE | {len(valid_tokens)} VALID TOKENS |  {reset}\n```")
+    
+    # Download and process image
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url) as response:
+                if response.status != 200:
+                    await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | FAILED TO DOWNLOAD IMAGE | STATUS: {response.status} |  {reset}\n```")
+                    return
+                
+                image_data = await response.read()
+                
+                # Simple base64 encoding without PIL
+                image_b64 = base64.b64encode(image_data).decode()
+                
+                # Determine format from content type
+                content_type = response.headers.get('Content-Type', '')
+                if 'gif' in content_type:
+                    image_format = 'gif'
+                elif 'jpeg' in content_type or 'jpg' in content_type:
+                    image_format = 'jpeg'
+                else:
+                    image_format = 'png'
+                    
+    except Exception as e:
+        await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | IMAGE DOWNLOAD ERROR: {str(e)} |  {reset}\n```")
+        return
+    
+    await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | CHANGING PFPS | {len(valid_tokens)} VALID TOKENS |  {reset}\n```")
+    
+    success_count = 0
+    failed_count = 0
+    captcha_count = 0
+    invalid_count = 0
+    
+    async def change_pfp(token_data):
+        nonlocal success_count, failed_count, captcha_count, invalid_count
+        
+        token = token_data['token']
+        username = token_data['username']
+        index = token_data['index']
+        
+        headers = {
+            'Authorization': token,
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        
+        try:
+            # Prepare payload
+            payload = {
+                'avatar': f"data:image/{image_format};base64,{image_b64}"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.patch(
+                    'https://discord.com/api/v9/users/@me',
+                    headers=headers,
+                    json=payload
+                ) as resp:
+                    
+                    if resp.status == 200:
+                        print(f"{theme_primary}[SUCCESS] {username} PFP updated{reset}")
+                        success_count += 1
+                        
+                    elif resp.status == 400:
+                        error_data = await resp.json()
+                        if 'captcha' in str(error_data).lower():
+                            print(f"{theme_secondary}[CAPTCHA] {username} requires captcha{reset}")
+                            captcha_count += 1
+                        elif 'Unknown Session' in str(error_data):
+                            print(f"{theme_secondary}[INVALID] {username} token expired{reset}")
+                            invalid_count += 1
+                        else:
+                            print(f"{theme_secondary}[FAILED] {username}: 400 - {error_data}{reset}")
+                            failed_count += 1
+                            
+                    elif resp.status == 401:
+                        print(f"{theme_secondary}[INVALID] {username} unauthorized{reset}")
+                        invalid_count += 1
+                        
+                    elif resp.status == 403:
+                        print(f"{theme_secondary}[BLOCKED] {username} action blocked{reset}")
+                        failed_count += 1
+                        
+                    elif resp.status == 429:
+                        retry_after = float((await resp.json()).get('retry_after', 1))
+                        print(f"{theme_secondary}[RATE LIMITED] {username}, waiting {retry_after}s{reset}")
+                        await asyncio.sleep(retry_after)
+                        # Don't retry for now to avoid loops
+                        failed_count += 1
+                        
+                    else:
+                        print(f"{theme_secondary}[FAILED] {username}: Status {resp.status}{reset}")
+                        failed_count += 1
+                        
+        except Exception as e:
+            print(f"{theme_secondary}[ERROR] {username}: {str(e)}{reset}")
+            failed_count += 1
+    
+    # Process valid tokens with delays
+    for i, token_data in enumerate(valid_tokens):
+        await change_pfp(token_data)
+        
+        # Update progress
+        progress = f"```ansi\n{theme_primary} XLEGACY | PROGRESS: {i+1}/{len(valid_tokens)} | SUCCESS: {success_count} | FAILED: {failed_count} |  {reset}\n```"
+        await status_msg.edit(content=progress)
+        
+        # Add delay between requests (1 second)
+        if (i + 1) < len(valid_tokens):
+            await asyncio.sleep(1)
+    
+    # Final status with detailed breakdown
+    result_msg = f"""```ansi
+{theme_primary} XLEGACY | PFP UPDATE COMPLETE {reset}
+{theme_secondary}Valid Tokens: {len(valid_tokens)}{reset}
+{theme_primary}Success: {success_count}{reset}
+{theme_secondary}Failed: {failed_count}{reset}
+{theme_primary}Captcha Required: {captcha_count}{reset}
+{theme_secondary}Invalid Tokens: {invalid_count}{reset}
+```"""
+    await status_msg.edit(content=result_msg)
+
+@bot.command()
+async def tpfpsteal(ctx, user: discord.Member = None, token_input: str = None):
+    """Steal a user's PFP and apply to token(s)"""
+    if user is None:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | MENTION A USER TO STEAL PFP FROM |  {reset}\n```")
+        return
+    
+    # Get user's avatar URL
+    avatar_format = "gif" if user.is_avatar_animated() else "png"
+    avatar_url = str(user.avatar_url_as(format=avatar_format, size=1024))
+    
+    # Use the tpfp command with the stolen avatar
+    await ctx.invoke(bot.get_command('tpfp'), image_url=avatar_url, token_input=token_input)
+
+@bot.command()
+async def tvalidate(ctx):
+    """Validate all tokens and show which are working"""
+    tokens = load_tokens()
+    
+    if not tokens:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
+        return
+    
+    status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | VALIDATING {len(tokens)} TOKENS |  {reset}\n```")
+    
+    valid_tokens = []
+    invalid_tokens = []
+    
+    async def validate_single_token(token, index):
+        headers = {
+            'Authorization': token,
+            'Content-Type': 'application/json'
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    'https://discord.com/api/v9/users/@me',
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status == 200:
+                        user_data = await resp.json()
+                        valid_tokens.append({
+                            'token': token[-4:],  # Only show last 4 chars for security
+                            'username': f"{user_data['username']}#{user_data.get('discriminator', '0000')}",
+                            'index': index
+                        })
+                    else:
+                        invalid_tokens.append({
+                            'token': token[-4:],
+                            'status': resp.status,
+                            'index': index
+                        })
+        except Exception as e:
+            invalid_tokens.append({
+                'token': token[-4:],
+                'status': 'ERROR',
+                'error': str(e),
+                'index': index
+            })
+    
+    # Validate all tokens
+    tasks = []
+    for i, token in enumerate(tokens):
+        task = asyncio.create_task(validate_single_token(token, i))
+        tasks.append(task)
+    
+    await asyncio.gather(*tasks)
+    
+    # Build result message
+    result_lines = [f"{theme_primary} TOKEN VALIDATION RESULTS {reset}"]
+    result_lines.append(f"{theme_secondary}Valid: {len(valid_tokens)} | Invalid: {len(invalid_tokens)}{reset}")
+    
+    if valid_tokens:
+        result_lines.append(f"\n{theme_primary}VALID TOKENS:{reset}")
+        for token_data in valid_tokens:
+            result_lines.append(f"{theme_secondary}[{token_data['index']+1}] {token_data['username']} (...{token_data['token']}){reset}")
+    
+    if invalid_tokens:
+        result_lines.append(f"\n{theme_primary}INVALID TOKENS:{reset}")
+        for token_data in invalid_tokens:
+            result_lines.append(f"{theme_secondary}[{token_data['index']+1}] ...{token_data['token']} - {token_data.get('status', 'UNKNOWN')}{reset}")
+    
+    result_msg = "```ansi\n" + "\n".join(result_lines) + "\n```"
+    await status_msg.edit(content=result_msg)
+# Add to global variables
+token_rpc_tasks = {}
+token_rpc_configs = {}
+auto_rpc_enabled = False
+
+@bot.command()
+async def trpc(ctx, action: str = None, *, args: str = None):
+    """Control token RPC status with proper Discord presence"""
+    if action is None:
+        help_content = fr"""
+{theme_primary} TOKEN RPC COMMANDS {reset}
+{theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
+
+{theme_primary}Quick Start:{reset}
+{theme_secondary}.trpc preset spotify          {theme_primary}- Apply Spotify preset{reset}
+{theme_secondary}.trpc start all               {theme_primary}- Start RPC rotation{reset}
+{theme_secondary}.trpc auto on                 {theme_primary}- Auto-start on bot launch{reset}
+
+{theme_primary}Basic Usage:{reset}
+{theme_secondary}.trpc set <type> <name> [details] [state]{reset}
+{theme_secondary}.trpc start [token_number/all]{reset}
+{theme_secondary}.trpc stop [token_number/all]{reset}
+{theme_secondary}.trpc auto <on/off>{reset}
+{theme_secondary}.trpc status{reset}
+{theme_secondary}.trpc preset <name>{reset}
+
+{theme_primary}RPC Types:{reset}
+{theme_secondary}game      {theme_primary}- Playing a game{reset}
+{theme_secondary}music     {theme_primary}- Listening to music{reset}
+{theme_secondary}watch     {theme_primary}- Watching something{reset}
+{theme_secondary}stream    {theme_primary}- Streaming{reset}
+
+{theme_primary}Examples:{reset}
+{theme_secondary}.trpc set game "VALORANT" "In a match" "Competitive"{reset}
+{theme_secondary}.trpc set music "Spotify" "Lil Tecca" "Ransom"{reset}
+{theme_secondary}.trpc set stream "Twitch" "Live coding" "Python"{reset}
+```"""
+        await ctx.send(f"```ansi\n{help_content}\n```")
+        return
+
+    tokens = load_tokens()
+    
+    if action.lower() == 'set':
+        await set_token_rpc(ctx, args, tokens)
+    elif action.lower() == 'start':
+        await start_token_rpc(ctx, args, tokens)
+    elif action.lower() == 'stop':
+        await stop_token_rpc(ctx, args, tokens)
+    elif action.lower() == 'auto':
+        await set_auto_rpc(ctx, args)
+    elif action.lower() == 'status':
+        await show_rpc_status(ctx, tokens)
+    elif action.lower() == 'preset':
+        await apply_rpc_preset(ctx, args, tokens)
+    else:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID ACTION |  {reset}\n```")
+
+async def set_token_rpc(ctx, args, tokens):
+    """Set RPC configuration for tokens"""
+    if not args:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | USAGE: .trpc set <type> <name> [details] [state] |  {reset}\n```")
+        return
+    
+    parts = args.split(' ', 3)  # Split into max 4 parts
+    if len(parts) < 2:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | PROVIDE TYPE AND NAME |  {reset}\n```")
+        return
+    
+    rpc_type = parts[0].lower()
+    name = parts[1]
+    details = parts[2] if len(parts) > 2 else None
+    state = parts[3] if len(parts) > 3 else None
+    
+    # Determine which tokens to configure
+    selected_tokens = tokens
+    
+    status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | CONFIGURING RPC |  {reset}\n```")
+    
+    config_count = 0
+    for i, token in enumerate(selected_tokens):
+        token_key = f"token_{i}"
+        
+        if token_key not in token_rpc_configs:
+            token_rpc_configs[token_key] = {
+                'token': token,
+                'configs': [],
+                'current_index': 0,
+                'enabled': False
+            }
+        
+        # Add this configuration
+        config = {
+            'type': rpc_type,
+            'name': name,
+            'details': details,
+            'state': state
+        }
+        
+        token_rpc_configs[token_key]['configs'].append(config)
+        config_count += 1
+    
+    await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | RPC CONFIGURED | {config_count} TOKENS |  {reset}\n```")
+
+async def start_token_rpc(ctx, args, tokens):
+    """Start RPC rotation for tokens"""
+    if not token_rpc_configs:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO RPC CONFIGURATIONS | USE .trpc set FIRST |  {reset}\n```")
+        return
+    
+    selected_tokens = []
+    if args and args.lower() != 'all':
+        try:
+            token_index = int(args) - 1
+            if 0 <= token_index < len(tokens):
+                selected_tokens = [f"token_{token_index}"]
+            else:
+                await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN NUMBER |  {reset}\n```")
+                return
+        except ValueError:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN INPUT |  {reset}\n```")
+            return
+    else:
+        selected_tokens = list(token_rpc_configs.keys())
+    
+    status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | STARTING RPC |  {reset}\n```")
+    
+    started_count = 0
+    for token_key in selected_tokens:
+        if token_key in token_rpc_configs:
+            config_data = token_rpc_configs[token_key]
+            if config_data['configs'] and not config_data['enabled']:
+                config_data['enabled'] = True
+                config_data['current_index'] = 0
+                
+                # Start the rotation task
+                task = asyncio.create_task(rotate_token_rpc(token_key, config_data))
+                token_rpc_tasks[token_key] = task
+                started_count += 1
+                
+                # Apply first status immediately
+                await apply_token_rpc(config_data['token'], config_data['configs'][0])
+    
+    await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | RPC STARTED | {started_count} TOKENS |  {reset}\n```")
+
+async def rotate_token_rpc(token_key, config_data):
+    """Rotate through RPC configurations"""
+    while config_data['enabled'] and token_key in token_rpc_configs:
+        try:
+            configs = config_data['configs']
+            if not configs:
+                break
+            
+            current_index = config_data['current_index']
+            current_config = configs[current_index]
+            
+            # Apply current RPC
+            success = await apply_token_rpc(config_data['token'], current_config)
+            
+            if success:
+                print(f"{theme_primary}[RPC] {token_key}: {current_config['type']} - {current_config['name']}{reset}")
+            
+            # Rotate to next configuration
+            config_data['current_index'] = (current_index + 1) % len(configs)
+            
+            # Wait before next rotation
+            await asyncio.sleep(random.randint(20, 40))
+            
+        except Exception as e:
+            print(f"{theme_secondary}[RPC ERROR] {token_key}: {e}{reset}")
+            await asyncio.sleep(10)
+
+async def apply_token_rpc(token, config):
+    """Apply RPC configuration using proper Discord presence"""
+    headers = {
+        'Authorization': token,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    try:
+        # Build the presence payload
+        payload = {
+            'status': 'online',
+            'activities': [],
+            'afk': False,
+            'since': int(time.time() * 1000)
+        }
+        
+        # Create activity based on type
+        activity = {
+            'name': config['name'],
+            'type': 0  # Default to playing
+        }
+        
+        # Set activity type
+        type_map = {
+            'game': 0,      # Playing
+            'music': 2,     # Listening  
+            'watch': 3,     # Watching
+            'stream': 1     # Streaming
+        }
+        
+        activity['type'] = type_map.get(config['type'], 0)
+        
+        # Add details and state if provided
+        if config.get('details'):
+            activity['details'] = config['details']
+        if config.get('state'):
+            activity['state'] = config['state']
+        
+        # For streaming, add URL
+        if config['type'] == 'stream':
+            activity['url'] = 'https://twitch.tv/discord'
+        
+        payload['activities'] = [activity]
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.patch(
+                'https://discord.com/api/v9/users/@me/settings',
+                headers=headers,
+                json=payload
+            ) as resp:
+                if resp.status == 200:
+                    return True
+                else:
+                    error_text = await resp.text()
+                    print(f"{theme_secondary}[RPC FAILED] Status {resp.status}: {error_text}{reset}")
+                    return False
+                    
+    except Exception as e:
+        print(f"{theme_secondary}[RPC ERROR] {e}{reset}")
+        return False
+
+async def stop_token_rpc(ctx, args, tokens):
+    """Stop RPC rotation for tokens"""
+    selected_tokens = []
+    if args and args.lower() != 'all':
+        try:
+            token_index = int(args) - 1
+            selected_tokens = [f"token_{token_index}"]
+        except ValueError:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN INPUT |  {reset}\n```")
+            return
+    else:
+        selected_tokens = list(token_rpc_tasks.keys())
+    
+    stopped_count = 0
+    for token_key in selected_tokens:
+        if token_key in token_rpc_tasks:
+            token_rpc_tasks[token_key].cancel()
+            del token_rpc_tasks[token_key]
+            
+            if token_key in token_rpc_configs:
+                token_rpc_configs[token_key]['enabled'] = False
+            
+            # Clear RPC status
+            token = token_rpc_configs.get(token_key, {}).get('token')
+            if token:
+                await clear_token_rpc(token)
+            
+            stopped_count += 1
+    
+    if stopped_count > 0:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | RPC STOPPED | {stopped_count} TOKENS |  {reset}\n```")
+    else:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO ACTIVE RPC |  {reset}\n```")
+
+async def clear_token_rpc(token):
+    """Clear RPC status"""
+    headers = {
+        'Authorization': token,
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        payload = {
+            'activities': [],
+            'status': 'online',
+            'afk': False
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            await session.patch(
+                'https://discord.com/api/v9/users/@me/settings',
+                headers=headers,
+                json=payload
+            )
+    except Exception as e:
+        print(f"{theme_secondary}[RPC CLEAR ERROR] {e}{reset}")
+
+async def set_auto_rpc(ctx, args):
+    """Enable/disable auto RPC"""
+    global auto_rpc_enabled
+    
+    if not args:
+        status = "ENABLED" if auto_rpc_enabled else "DISABLED"
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | AUTO RPC: {status} |  {reset}\n```")
+        return
+    
+    if args.lower() in ['on', 'enable', 'true']:
+        auto_rpc_enabled = True
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | AUTO RPC ENABLED |  {reset}\n```")
+    elif args.lower() in ['off', 'disable', 'false']:
+        auto_rpc_enabled = False
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | AUTO RPC DISABLED |  {reset}\n```")
+    else:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID OPTION |  {reset}\n```")
+
+async def show_rpc_status(ctx, tokens):
+    """Show RPC status"""
+    if not token_rpc_configs:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO RPC CONFIGURATIONS |  {reset}\n```")
+        return
+    
+    status_lines = [f"{theme_primary} TOKEN RPC STATUS {reset}"]
+    status_lines.append(f"{theme_secondary}Auto Start: {'ENABLED' if auto_rpc_enabled else 'DISABLED'}{reset}")
+    
+    active_count = 0
+    for i, token in enumerate(tokens):
+        token_key = f"token_{i}"
+        if token_key in token_rpc_configs:
+            config_data = token_rpc_configs[token_key]
+            status = "ACTIVE" if config_data['enabled'] else "INACTIVE"
+            config_count = len(config_data['configs'])
+            
+            if config_data['enabled']:
+                active_count += 1
+                current_config = config_data['configs'][config_data['current_index']]
+                status_lines.append(f"{theme_secondary}[{i+1}] {status} | {current_config['type']}: {current_config['name']}{reset}")
+            else:
+                status_lines.append(f"{theme_secondary}[{i+1}] {status} | {config_count} configs{reset}")
+    
+    status_lines.append(f"{theme_primary}Active: {active_count}/{len(token_rpc_configs)}{reset}")
+    
+    await ctx.send(f"```ansi\n" + "\n".join(status_lines) + "\n```")
+
+async def apply_rpc_preset(ctx, preset_name, tokens):
+    """Apply preset configurations"""
+    presets = {
+        'spotify': [
+            {'type': 'music', 'name': 'Spotify', 'details': 'Lil Tecca', 'state': 'Ransom'},
+            {'type': 'music', 'name': 'Spotify', 'details': 'Playboi Carti', 'state': 'Sky'},
+            {'type': 'music', 'name': 'Spotify', 'details': 'Kendrick Lamar', 'state': 'Humble'}
+        ],
+        'gaming': [
+            {'type': 'game', 'name': 'VALORANT', 'details': 'In a match', 'state': 'Competitive'},
+            {'type': 'game', 'name': 'Minecraft', 'details': 'Survival mode', 'state': 'Exploring'},
+            {'type': 'game', 'name': 'Fortnite', 'details': 'Battle Royale', 'state': 'Victory Royale!'}
+        ],
+        'coding': [
+            {'type': 'game', 'name': 'Visual Studio Code', 'details': 'Coding XLEGACY', 'state': 'Python'},
+            {'type': 'game', 'name': 'Python', 'details': 'Developing selfbot', 'state': 'Discord.py'}
+        ]
+    }
+    
+    if preset_name.lower() not in presets:
+        available = ", ".join(presets.keys())
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID PRESET | AVAILABLE: {available} |  {reset}\n```")
+        return
+    
+    # Apply preset to all tokens
+    preset_configs = presets[preset_name.lower()]
+    for i, token in enumerate(tokens):
+        token_key = f"token_{i}"
+        if token_key not in token_rpc_configs:
+            token_rpc_configs[token_key] = {
+                'token': token,
+                'configs': [],
+                'current_index': 0,
+                'enabled': False
+            }
+        
+        token_rpc_configs[token_key]['configs'] = preset_configs.copy()
+    
+    await ctx.send(f"```ansi\n{theme_primary} XLEGACY | PRESET APPLIED | {preset_name.upper()} |  {reset}\n```")
+
+@bot.command()
+async def tjoin(ctx, invite_code: str = None, token_input: str = None):
+    """Join a Discord server with token(s)"""
+    if invite_code is None:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | USAGE: .tjoin <invite_code> [token_number/all] |  {reset}\n```")
+        return
+    
+    # Clean invite code (remove discord.gg/ etc)
+    if 'discord.gg/' in invite_code:
+        invite_code = invite_code.split('discord.gg/')[-1]
+    elif 'discord.com/invite/' in invite_code:
+        invite_code = invite_code.split('discord.com/invite/')[-1]
+    
+    tokens = load_tokens()
+    
+    if not tokens:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
+        return
+    
+    # Determine which tokens to use
+    selected_tokens = []
+    
+    if token_input is None or token_input.lower() == 'all':
+        selected_tokens = tokens
+    else:
+        try:
+            token_index = int(token_input) - 1
+            if 0 <= token_index < len(tokens):
+                selected_tokens = [tokens[token_index]]
+            else:
+                await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN NUMBER |  {reset}\n```")
+                return
+        except ValueError:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN INPUT | USE NUMBER OR 'ALL' |  {reset}\n```")
+            return
+    
+    status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | VALIDATING TOKENS |  {reset}\n```")
+    
+    # First, validate which tokens are actually working
+    valid_tokens = []
+    
+    async def validate_token(token, index):
+        headers = {
+            'Authorization': token,
+            'Content-Type': 'application/json'
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    'https://discord.com/api/v9/users/@me',
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status == 200:
+                        user_data = await resp.json()
+                        valid_tokens.append({
+                            'token': token,
+                            'username': f"{user_data['username']}#{user_data.get('discriminator', '0000')}",
+                            'index': index
+                        })
+                        return True
+                    else:
+                        print(f"{theme_secondary}[INVALID] Token {index+1}: Status {resp.status}{reset}")
+                        return False
+        except Exception as e:
+            print(f"{theme_secondary}[ERROR] Token {index+1}: {str(e)}{reset}")
+            return False
+    
+    # Validate all tokens
+    validation_tasks = []
+    for i, token in enumerate(selected_tokens):
+        task = asyncio.create_task(validate_token(token, i))
+        validation_tasks.append(task)
+    
+    await asyncio.gather(*validation_tasks)
+    
+    if not valid_tokens:
+        await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | NO VALID TOKENS FOUND |  {reset}\n```")
+        return
+    
+    await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | JOINING SERVER | {len(valid_tokens)} VALID TOKENS |  {reset}\n```")
+    
+    success_count = 0
+    failed_count = 0
+    captcha_count = 0
+    banned_count = 0
+    
+    async def join_server(token_data):
+        nonlocal success_count, failed_count, captcha_count, banned_count
+        
+        token = token_data['token']
+        username = token_data['username']
+        index = token_data['index']
+        
+        headers = {
+            'Authorization': token,
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Join the server
+                async with session.post(
+                    f'https://discord.com/api/v9/invites/{invite_code}',
+                    headers=headers,
+                    json={}
+                ) as resp:
+                    
+                    if resp.status == 200:
+                        # Successfully joined
+                        response_data = await resp.json()
+                        guild_name = response_data.get('guild', {}).get('name', 'Unknown Server')
+                        print(f"{theme_primary}[SUCCESS] {username} joined {guild_name}{reset}")
+                        success_count += 1
+                        
+                    elif resp.status == 403:
+                        # Forbidden - usually means banned or no permission
+                        error_data = await resp.json()
+                        if 'banned' in str(error_data).lower():
+                            print(f"{theme_secondary}[BANNED] {username} is banned from server{reset}")
+                            banned_count += 1
+                        else:
+                            print(f"{theme_secondary}[BLOCKED] {username} cannot join: {error_data}{reset}")
+                            failed_count += 1
+                            
+                    elif resp.status == 400:
+                        error_data = await resp.json()
+                        if 'captcha' in str(error_data).lower():
+                            print(f"{theme_secondary}[CAPTCHA] {username} requires captcha{reset}")
+                            captcha_count += 1
+                        elif 'already' in str(error_data).lower():
+                            print(f"{theme_secondary}[ALREADY] {username} already in server{reset}")
+                            success_count += 1  # Count as success since they're already in
+                        else:
+                            print(f"{theme_secondary}[FAILED] {username}: 400 - {error_data}{reset}")
+                            failed_count += 1
+                            
+                    elif resp.status == 404:
+                        print(f"{theme_secondary}[INVALID] {username}: Invalid invite code{reset}")
+                        failed_count += 1
+                        
+                    elif resp.status == 429:
+                        # Rate limited
+                        retry_after = float((await resp.json()).get('retry_after', 1))
+                        print(f"{theme_secondary}[RATE LIMITED] {username}, waiting {retry_after}s{reset}")
+                        await asyncio.sleep(retry_after)
+                        # Don't retry to avoid loops
+                        failed_count += 1
+                        
+                    else:
+                        print(f"{theme_secondary}[FAILED] {username}: Status {resp.status}{reset}")
+                        failed_count += 1
+                        
+        except Exception as e:
+            print(f"{theme_secondary}[ERROR] {username}: {str(e)}{reset}")
+            failed_count += 1
+    
+    # Process valid tokens with delays to avoid rate limits
+    for i, token_data in enumerate(valid_tokens):
+        await join_server(token_data)
+        
+        # Update progress
+        progress = f"```ansi\n{theme_primary} XLEGACY | PROGRESS: {i+1}/{len(valid_tokens)} | SUCCESS: {success_count} | FAILED: {failed_count} |  {reset}\n```"
+        await status_msg.edit(content=progress)
+        
+        # Add delay between requests (2 seconds to avoid rate limits)
+        if (i + 1) < len(valid_tokens):
+            await asyncio.sleep(2)
+    
+    # Final status with detailed breakdown
+    result_msg = f"""```ansi
+{theme_primary} XLEGACY | JOIN COMPLETE {reset}
+{theme_secondary}Invite: {invite_code}{reset}
+{theme_primary}Valid Tokens: {len(valid_tokens)}{reset}
+{theme_secondary}Success: {success_count}{reset}
+{theme_primary}Failed: {failed_count}{reset}
+{theme_secondary}Captcha Required: {captcha_count}{reset}
+{theme_primary}Banned: {banned_count}{reset}
+```"""
+    await status_msg.edit(content=result_msg)
+
+@bot.command()
+async def tjoinfriend(ctx, user_id: str = None, token_input: str = None):
+    """Join server through friend invite"""
+    if user_id is None:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | USAGE: .tjoinfriend <user_id> [token_number/all] |  {reset}\n```")
+        return
+    
+    tokens = load_tokens()
+    
+    if not tokens:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
+        return
+    
+    # Determine which tokens to use
+    selected_tokens = []
+    
+    if token_input is None or token_input.lower() == 'all':
+        selected_tokens = tokens
+    else:
+        try:
+            token_index = int(token_input) - 1
+            if 0 <= token_index < len(tokens):
+                selected_tokens = [tokens[token_index]]
+            else:
+                await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN NUMBER |  {reset}\n```")
+                return
+        except ValueError:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN INPUT |  {reset}\n```")
+            return
+    
+    status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | SENDING FRIEND REQUESTS |  {reset}\n```")
+    
+    success_count = 0
+    failed_count = 0
+    
+    async def send_friend_request(token, index):
+        nonlocal success_count, failed_count
+        
+        headers = {
+            'Authorization': token,
+            'Content-Type': 'application/json'
+        }
+        
+        try:
+            payload = {
+                'username': user_id
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    'https://discord.com/api/v9/users/@me/relationships',
+                    headers=headers,
+                    json=payload
+                ) as resp:
+                    
+                    if resp.status in [200, 204]:
+                        print(f"{theme_primary}[FRIEND] Token {index+1} sent friend request{reset}")
+                        success_count += 1
+                    elif resp.status == 400:
+                        error_data = await resp.json()
+                        if 'already' in str(error_data).lower():
+                            print(f"{theme_secondary}[ALREADY] Token {index+1} already friends{reset}")
+                            success_count += 1
+                        else:
+                            print(f"{theme_secondary}[FAILED] Token {index+1}: {error_data}{reset}")
+                            failed_count += 1
+                    else:
+                        print(f"{theme_secondary}[FAILED] Token {index+1}: Status {resp.status}{reset}")
+                        failed_count += 1
+                        
+        except Exception as e:
+            print(f"{theme_secondary}[ERROR] Token {index+1}: {str(e)}{reset}")
+            failed_count += 1
+    
+    # Send friend requests
+    for i, token in enumerate(selected_tokens):
+        await send_friend_request(token, i)
+        
+        # Update progress
+        progress = f"```ansi\n{theme_primary} XLEGACY | PROGRESS: {i+1}/{len(selected_tokens)} | SUCCESS: {success_count} | FAILED: {failed_count} |  {reset}\n```"
+        await status_msg.edit(content=progress)
+        
+        # Add delay
+        if (i + 1) < len(selected_tokens):
+            await asyncio.sleep(1)
+    
+    await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | FRIEND REQUESTS SENT | SUCCESS: {success_count} | FAILED: {failed_count} |  {reset}\n```")
+
+@bot.command()
+async def tleaveserver(ctx, server_id: str = None, token_input: str = None):
+    """Leave a server with token(s)"""
+    if server_id is None:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | USAGE: .tleaveserver <server_id> [token_number/all] |  {reset}\n```")
+        return
+    
+    tokens = load_tokens()
+    
+    if not tokens:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
+        return
+    
+    # Determine which tokens to use
+    selected_tokens = []
+    
+    if token_input is None or token_input.lower() == 'all':
+        selected_tokens = tokens
+    else:
+        try:
+            token_index = int(token_input) - 1
+            if 0 <= token_index < len(tokens):
+                selected_tokens = [tokens[token_index]]
+            else:
+                await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN NUMBER |  {reset}\n```")
+                return
+        except ValueError:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN INPUT |  {reset}\n```")
+            return
+    
+    status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | LEAVING SERVER |  {reset}\n```")
+    
+    success_count = 0
+    failed_count = 0
+    
+    async def leave_server(token, index):
+        nonlocal success_count, failed_count
+        
+        headers = {
+            'Authorization': token,
+            'Content-Type': 'application/json'
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.delete(
+                    f'https://discord.com/api/v9/users/@me/guilds/{server_id}',
+                    headers=headers,
+                    json={'lurking': False}
+                ) as resp:
+                    
+                    if resp.status in [200, 204]:
+                        print(f"{theme_primary}[LEFT] Token {index+1} left server{reset}")
+                        success_count += 1
+                    elif resp.status == 404:
+                        print(f"{theme_secondary}[NOT IN] Token {index+1} not in server{reset}")
+                        success_count += 1  # Count as success since they're not in it
+                    else:
+                        print(f"{theme_secondary}[FAILED] Token {index+1}: Status {resp.status}{reset}")
+                        failed_count += 1
+                        
+        except Exception as e:
+            print(f"{theme_secondary}[ERROR] Token {index+1}: {str(e)}{reset}")
+            failed_count += 1
+    
+    # Leave server
+    for i, token in enumerate(selected_tokens):
+        await leave_server(token, i)
+        
+        # Update progress
+        progress = f"```ansi\n{theme_primary} XLEGACY | PROGRESS: {i+1}/{len(selected_tokens)} | SUCCESS: {success_count} | FAILED: {failed_count} |  {reset}\n```"
+        await status_msg.edit(content=progress)
+        
+        # Add delay
+        if (i + 1) < len(selected_tokens):
+            await asyncio.sleep(1)
+    
+    await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | SERVER LEAVE COMPLETE | SUCCESS: {success_count} | FAILED: {failed_count} |  {reset}\n```")
+
+
 
 # Read token from config.json
 with open('config.json', 'r') as config_file:
