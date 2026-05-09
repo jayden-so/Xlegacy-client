@@ -1,3 +1,4 @@
+newline = "\n"
 
 
 import discord
@@ -1270,7 +1271,7 @@ async def scrapedelete(ctx, folder_name: str = None):
         content = fr"""
 {red}AVAILABLE FOLDERS TO DELETE{reset}
 
-{"\n".join(folder_list)}
+{newline.join(folder_list)}
 
 {light_red}Usage: {black}.scrapedelete <folder_name>{reset}
 {light_red}Example: {black}.scrapedelete scrape_20241201_143022{reset}
@@ -6036,7 +6037,7 @@ async def theme(ctx, theme_name: str = None):
 {theme_primary} AVAILABLE THEMES {reset}
 {theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 
-{"\n".join(theme_list)}
+{newline.join(theme_list)}
 
 {theme_secondary}Usage: {theme_accent}.theme <theme_name>{reset}
 {theme_secondary}Example: {theme_accent}.theme green{reset}
