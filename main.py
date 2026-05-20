@@ -538,8 +538,8 @@ async def on_ready():
     
 @bot.command()
 async def menu(ctx):
-    await ctx.send(f"""```ansi
-       
+    await ctx.message.delete()
+    print(f"""
                 {black}─────────────────────────────────────XLEGACY─────────────────────────
                            {red} ──────────────────── XLEGACY |  MADE BY @unholxy {light_red} V.1 ────────────────────
                 {black}─────────────────────────────────────Selfbot─────────────────────────{red}
@@ -575,22 +575,20 @@ async def menu(ctx):
 {light_red}[ {light_red}.spotify {light_red}] {red}Spotify Control      {black}[ {light_red}.account {black}] {red}Account
 {light_red}[ {light_red}.nsfw {light_red}] {red}NSFW    {black}[ {light_red}.settings {black}] {red}Settings
 {light_red}[ {light_red}.ab {light_red}] {red}Auto Beef {black}[ {light_red}.multi {black}] {red}Multi-token
-
-    ```
-""")
+{reset}""")
     
 # MAIN COMMANDS
 
 @bot.command()
 async def main(ctx):
-    msg = await ctx.send(f"```ansi\n{red} XLEGACY | MULTI MAIN {reset}\n```")
-    help_content = fr"""
+    await ctx.message.delete()
+    print(f"""
                 {black}─────────────────────────────────────XLEGACY─────────────────────────
                            {red} ──────────────────── XLEGACY |  MADE BY @unholxy {light_red} V.1 ────────────────────
                 {black}─────────────────────────────────────Selfbot─────────────────────────{red}
- 
+
 {red}Multi Token Management{reset}
-{light_red}[ {red}1{light_red} ] {black}outlast <@user>    {light_red}[ {red}2{light_red} ] {black}stopoutlast        {light_red}[ {red}3{light_red} ] {black}multilast <@user> 
+{light_red}[ {red}1{light_red} ] {black}outlast <@user>    {light_red}[ {red}2{light_red} ] {black}stopoutlast        {light_red}[ {red}3{light_red} ] {black}multilast <@user>
 {light_red}[ {red}4{light_red} ] {black}stopmultilast      {light_red}[ {red}5{light_red} ] {black}tok                {light_red}[ {red}6{light_red} ] {black}multivc
 
 {red}Auto Response{reset}
@@ -609,9 +607,7 @@ async def main(ctx):
 {red}Reactions & Status{reset}
 {light_red}[ {red}28{light_red} ] {black}reactoff          {light_red}[ {red}29{light_red} ] {black}autoreact         {light_red}[ {red}30{light_red} ] {black}autoreactoff
 {light_red}[ {red}31{light_red} ] {black}rpcall            {light_red}[ {red}32{light_red} ] {black}stoprpc           {light_red}[ {red}33{light_red} ] {black}inviteinfo <code>
-⠀⠀
-"""
-    await msg.edit(content=f"```ansi\n{help_content}\n```")
+{reset}""")
 
 # OUTLAST COMMANDS
 @bot.command()
@@ -984,8 +980,8 @@ async def vcstop(ctx):
 
 @bot.command()
 async def nsfw(ctx):
-    msg = await ctx.send(f"```ansi\n{red} XLEGACY | NSFW COMMANDS {reset}\n```")
-    help_content = fr"""
+    await ctx.message.delete()
+    print(f"""
                 {black}─────────────────────────────────────XLEGACY─────────────────────────
                            {red} ──────────────────── XLEGACY |  MADE BY @unholxy {light_red} V.1 ────────────────────
                 {black}─────────────────────────────────────NSFW─────────────────────────{red}
@@ -994,22 +990,7 @@ async def nsfw(ctx):
 {light_red}[ {red}1{light_red} ] {black}ecchi              {light_red}[ {red}2{light_red} ] {black}hentai             {light_red}[ {red}3{light_red} ] {black}uniform
 {light_red}[ {red}4{light_red} ] {black}maid               {light_red}[ {red}5{light_red} ] {black}oppai              {light_red}[ {red}6{light_red} ] {black}selfies
 {light_red}[ {red}7{light_red} ] {black}raiden             {light_red}[ {red}8{light_red} ] {black}marin
-
-{red}
- __   ___      ______ _____          _______     __
- \ \ / / |    |  ____/ ____|   /\   / ____\ \   / /
-  \ V /| |    | |__ | |  __   /  \ | |     \ \_/ / 
-   > < | |    |  __|| | |_ | / /\ \| |      \   /  
-  / . \| |____| |___| |__| |/ ____ \ |____   | |   
- /_/ \_\______|______\_____/_/    \_\_____|  |_|   
-                                                   
-                                                   
-  
-                                          
-
-
-"""
-    await msg.edit(content=f"```ansi\n{help_content}\n```")
+{reset}""")
 @bot.command(name="ecchi")
 async def ecchi(ctx, member: discord.Member = None):
     async with aiohttp.ClientSession() as session:
@@ -1101,8 +1082,8 @@ async def marin(ctx, member: discord.Member = None):
 
 @bot.command()
 async def misc(ctx):
-    msg2 = await ctx.send("Loading.")
-    help_content2 = fr"""
+    await ctx.message.delete()
+    print(f"""
 {red}User Interaction{reset}
 {light_red}[ {red}42{light_red} ] {black}pfpscrape <num>    {light_red}[ {red}43{light_red} ] {black}triggertyping <dur> {light_red}[ {red}44{light_red} ] {black}triggertypingoff
 {light_red}[ {red}45{light_red} ] {black}ghostping <@user>  {light_red}[ {red}46{light_red} ] {black}ghostrole          {light_red}[ {red}47{light_red} ] {black}token
@@ -1115,16 +1096,7 @@ async def misc(ctx):
 {light_red}[ {red}54{light_red} ] {black}tempchannel <name> {light_red}[ {red}55{light_red} ] {black}tempvc <name>      {light_red}[ {red}56{light_red} ] {black}roblox <username>
 {light_red}[ {red}57{light_red} ] {black}servername <name>  {light_red}[ {red}58{light_red} ] {black}pin               {light_red}[ {red}59{light_red} ] {black}createchannel
 {light_red}[ {red}60{light_red} ] {black}createvc          {light_red}[ {red}61{light_red} ] {black}createrole        {light_red}[ {red}62{light_red} ] {black}servername
-
-{red}
- __   ___      ______ _____          _______     __
- \ \ / / |    |  ____/ ____|   /\   / ____\ \   / /
-  \ V /| |    | |__ | |  __   /  \ | |     \ \_/ / 
-   > < | |    |  __|| | |_ | / /\ \| |      \   /  
-  / . \| |____| |___| |__| |/ ____ \ |____   | |   
- /_/ \_\______|______\_____/_/    \_\_____|  |_|   
-
-"""
+{reset}""")
 
 @bot.command()
 
@@ -3216,14 +3188,14 @@ async def hypesquad(ctx, house: str):
 
 @bot.command()
 async def spotify(ctx):
-    msg6 = await ctx.send("Loading.")
-    help_content6 = fr"""
+    await ctx.message.delete()
+    print(f"""
 {red}Spotify Control System{reset}
-{light_red}[ {red}1{light_red} ] {black}spotify unpause          {light_red}[ {red}2{light_red} ] {black}spotify pause            
-{light_red}[ {red}3{light_red} ] {black}spotify next             {light_red}[ {red}4{light_red} ] {black}spotify prev              
-{light_red}[ {red}5{light_red} ] {black}spotify play <song>      {light_red}[ {red}6{light_red} ] {black}spotify current           
-{light_red}[ {red}7{light_red} ] {black}spotify addqueue <song>  {light_red}[ {red}8{light_red} ] {black}spotify volume <0-100>    
-{light_red}[ {red}9{light_red} ] {black}spotify shuffle <on/off> {light_red}[ {red}10{light_red} ] {black}spotify repeat <mode>     
+{light_red}[ {red}1{light_red} ] {black}spotify unpause          {light_red}[ {red}2{light_red} ] {black}spotify pause
+{light_red}[ {red}3{light_red} ] {black}spotify next             {light_red}[ {red}4{light_red} ] {black}spotify prev
+{light_red}[ {red}5{light_red} ] {black}spotify play <song>      {light_red}[ {red}6{light_red} ] {black}spotify current
+{light_red}[ {red}7{light_red} ] {black}spotify addqueue <song>  {light_red}[ {red}8{light_red} ] {black}spotify volume <0-100>
+{light_red}[ {red}9{light_red} ] {black}spotify shuffle <on/off> {light_red}[ {red}10{light_red} ] {black}spotify repeat <mode>
 
 {light_red}Description:{reset}
 {black}Control your Spotify playback with these commands{reset}
@@ -3235,8 +3207,7 @@ async def spotify(ctx):
 {black}spotify repeat track{reset}
 
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
-"""
-    await msg6.edit(content=f"```ansi\n{help_content6}```")
+""")
 
 status_rotation_active = False
 emoji_rotation_active = False
@@ -3591,19 +3562,18 @@ rotation_tasks = {}
 
 @bot.command()
 async def ab(ctx):
-    msg = await ctx.send("Loading.")
-    help_content = fr"""
+    await ctx.message.delete()
+    print(f"""
 {red}Auto Bio & Profile Commands{reset}
-{light_red}[ {red}1{light_red} ] {black}setbio <text>          {light_red}[ {red}2{light_red} ] {black}rotatebio <texts>     
-{light_red}[ {red}3{light_red} ] {black}stoprotatebio         {light_red}[ {red}4{light_red} ] {black}setpronoun <text>     
-{light_red}[ {red}5{light_red} ] {black}rotatepronoun <texts> {light_red}[ {red}6{light_red} ] {black}stoprotatepronoun    
-{light_red}[ {red}7{light_red} ] {black}channelrotate         {light_red}[ {red}8{light_red} ] {black}stopchannelrotate    
-{light_red}[ {red}9{light_red} ] {black}banner <@user>        {light_red}[ {red}10{light_red} ] {black}mutualinfo <@user>   
-{light_red}[ {red}11{light_red} ] {black}stealbio <@user>     
+{light_red}[ {red}1{light_red} ] {black}setbio <text>          {light_red}[ {red}2{light_red} ] {black}rotatebio <texts>
+{light_red}[ {red}3{light_red} ] {black}stoprotatebio         {light_red}[ {red}4{light_red} ] {black}setpronoun <text>
+{light_red}[ {red}5{light_red} ] {black}rotatepronoun <texts> {light_red}[ {red}6{light_red} ] {black}stoprotatepronoun
+{light_red}[ {red}7{light_red} ] {black}channelrotate         {light_red}[ {red}8{light_red} ] {black}stopchannelrotate
+{light_red}[ {red}9{light_red} ] {black}banner <@user>        {light_red}[ {red}10{light_red} ] {black}mutualinfo <@user>
+{light_red}[ {red}11{light_red} ] {black}stealbio <@user>
 
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
-"""
-    await msg.edit(content=f"```ansi\n{help_content}```")
+""")
 
 @bot.command()
 async def setbio(ctx, *, bio_text: str):
@@ -4165,17 +4135,16 @@ DISCORD_HEADERS = {
 
 @bot.command()
 async def account(ctx):
-    msg = await ctx.send("Loading.")
-    help_content = fr"""
+    await ctx.message.delete()
+    print(f"""
 {red}Account & Profile Commands{reset}
-{light_red}[ {red}1{light_red} ] {black}stealpfp <@user>       {light_red}[ {red}2{light_red} ] {black}stealbanner <@user>   
-{light_red}[ {red}3{light_red} ] {black}setname <name>        {light_red}[ {red}4{light_red} ] {black}copyprofile <@user>  
-{light_red}[ {red}5{light_red} ] {black}pbackup               {light_red}[ {red}6{light_red} ] {black}setpfp <url>         
-{light_red}[ {red}7{light_red} ] {black}setbanner <url>      
+{light_red}[ {red}1{light_red} ] {black}stealpfp <@user>       {light_red}[ {red}2{light_red} ] {black}stealbanner <@user>
+{light_red}[ {red}3{light_red} ] {black}setname <name>        {light_red}[ {red}4{light_red} ] {black}copyprofile <@user>
+{light_red}[ {red}5{light_red} ] {black}pbackup               {light_red}[ {red}6{light_red} ] {black}setpfp <url>
+{light_red}[ {red}7{light_red} ] {black}setbanner <url>
 
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
-"""
-    await msg.edit(content=f"```ansi\n{help_content}```")
+""")
 
 @bot.command()
 async def stealpfp(ctx, user: discord.Member = None):
@@ -4987,39 +4956,27 @@ protection_groupchat = ["Protected GC", "Safe Zone", "Guarded Chat"]
 
 @bot.command()
 async def chatpack(ctx):
-    msg = await ctx.send(f"```ansi\n{red} XLEGACY | CHATPACK COMMANDS |  {reset}\n```")
-    help_content = fr"""
+    await ctx.message.delete()
+    print(f"""
                 {black}─────────────────────────────────────XLEGACY─────────────────────────
                            {red} ──────────────────── XLEGACY |  MADE BY @unholxy {light_red} V.1 ────────────────────
                 {black}─────────────────────────────────────CHATPACK─────────────────────────{red}
 
 {red}Spam & Auto-Reply{reset}
-{light_red}[ {red}1{light_red} ] {black}rape <@user>          {light_red}[ {red}2{light_red} ] {black}rapeoff              
-{light_red}[ {red}3{light_red} ] {black}ar <@user>            {light_red}[ {red}4{light_red} ] {black}arend                
-{light_red}[ {red}5{light_red} ] {black}arm <@user>           {light_red}[ {red}6{light_red} ] {black}armend               
-{light_red}[ {red}7{light_red} ] {black}kill <user_id>        {light_red}[ {red}8{light_red} ] {black}killend              
+{light_red}[ {red}1{light_red} ] {black}rape <@user>          {light_red}[ {red}2{light_red} ] {black}rapeoff
+{light_red}[ {red}3{light_red} ] {black}ar <@user>            {light_red}[ {red}4{light_red} ] {black}arend
+{light_red}[ {red}5{light_red} ] {black}arm <@user>           {light_red}[ {red}6{light_red} ] {black}armend
+{light_red}[ {red}7{light_red} ] {black}kill <user_id>        {light_red}[ {red}8{light_red} ] {black}killend
 
 {red}Group Chat Control{reset}
-{light_red}[ {red}9{light_red} ] {black}gc                    {light_red}[ {red}10{light_red} ] {black}gcend                
-{light_red}[ {red}11{light_red} ] {black}gcfill               {light_red}[ {red}12{light_red} ] {black}gcleave              
+{light_red}[ {red}9{light_red} ] {black}gc                    {light_red}[ {red}10{light_red} ] {black}gcend
+{light_red}[ {red}11{light_red} ] {black}gcfill               {light_red}[ {red}12{light_red} ] {black}gcleave
 {light_red}[ {red}13{light_red} ] {black}gcleaveall           {light_red}[ {red}14{light_red} ] {black}protection start <@user>
-{light_red}[ {red}15{light_red} ] {black}protection stop      {light_red}[ {red}16{light_red} ] {black}protectionoff        
+{light_red}[ {red}15{light_red} ] {black}protection stop      {light_red}[ {red}16{light_red} ] {black}protectionoff
 
 {red}Status & System{reset}
-{light_red}[ {red}17{light_red} ] {black}rpcall <messages>    {light_red}[ {red}18{light_red} ] {black}reload               
-
-{red}
- __   ___      ______ _____          _______     __
- \ \ / / |    |  ____/ ____|   /\   / ____\ \   / /
-  \ V /| |    | |__ | |  __   /  \ | |     \ \_/ / 
-   > < | |    |  __|| | |_ | / /\ \| |      \   /  
-  / . \| |____| |___| |__| |/ ____ \ |____   | |   
- /_/ \_\______|______\_____/_/    \_\_____|  |_|   
-                                                  
-                                                  
-
-"""
-    await msg.edit(content=f"```ansi\n{help_content}\n```")
+{light_red}[ {red}17{light_red} ] {black}rpcall <messages>    {light_red}[ {red}18{light_red} ] {black}reload
+{reset}""")
 
 @bot.command()
 async def rape(ctx, user: discord.User):
@@ -5775,29 +5732,30 @@ async def mreactoff(ctx):
 @bot.command()
 async def multi(ctx):
     """Display all multi-token commands"""
-    help_content = fr"""
+    await ctx.message.delete()
+    print(f"""
 {red} MULTI-TOKEN COMMANDS {reset}
 {light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 
 {red}Token Management{reset}
-{light_red}[ {red}1{light_red} ] {black}tok                {light_red}- {red}Check token status{reset}           {light_red}[ {red}2{light_red} ] {black}say <token> <msg> {light_red}- {red}Send with specific token{reset}
+{light_red}[ {red}1{light_red} ] {black}tok                {light_red}- {red}Check token status{reset}       {light_red}[ {red}2{light_red} ] {black}say <token> <msg> {light_red}- {red}Send with specific token{reset}
 {light_red}[ {red}3{light_red} ] {black}say <message>      {light_red}- {red}Send with all tokens{reset}
 
 {red}Mass Actions{reset}
-{light_red}[ {red}4{light_red} ] {black}mspam <messages>   {light_red}- {red}Multi-token spam{reset}            {light_red}[ {red}5{light_red} ] {black}mspamoff        {light_red}- {red}Stop spam{reset}
-{light_red}[ {red}6{light_red} ] {black}reactm <emoji> @user{light_red} - {red}Mass react{reset}              {light_red}[ {red}7{light_red} ] {black}reactoff       {light_red}- {red}Stop reactions{reset}
-{light_red}[ {red}8{light_red} ] {black}multilast @user   {light_red}- {red}Multi outlast{reset}              {light_red}[ {red}9{light_red} ] {black}stopmultilast  {light_red}- {red}Stop outlast{reset}
+{light_red}[ {red}4{light_red} ] {black}mspam <messages>   {light_red}- {red}Multi-token spam{reset}         {light_red}[ {red}5{light_red} ] {black}mspamoff        {light_red}- {red}Stop spam{reset}
+{light_red}[ {red}6{light_red} ] {black}reactm <emoji> @user{light_red} - {red}Mass react{reset}           {light_red}[ {red}7{light_red} ] {black}reactoff       {light_red}- {red}Stop reactions{reset}
+{light_red}[ {red}8{light_red} ] {black}multilast @user   {light_red}- {red}Multi outlast{reset}           {light_red}[ {red}9{light_red} ] {black}stopmultilast  {light_red}- {red}Stop outlast{reset}
 
 {red}Voice Channel{reset}
-{light_red}[ {red}10{light_red} ] {black}multivc <id>     {light_red}- {red}Connect to VC{reset}              {light_red}[ {red}11{light_red} ] {black}vcend <id>     {light_red}- {red}Leave VC{reset}
+{light_red}[ {red}10{light_red} ] {black}multivc <id>     {light_red}- {red}Connect to VC{reset}           {light_red}[ {red}11{light_red} ] {black}vcend <id>     {light_red}- {red}Leave VC{reset}
 {light_red}[ {red}12{light_red} ] {black}vcstop           {light_red}- {red}Stop all VC{reset}
 
 {red}Auto Responses{reset}
-{light_red}[ {red}13{light_red} ] {black}arm @user        {light_red}- {red}Auto-reply multi{reset}           {light_red}[ {red}14{light_red} ] {black}armend         {light_red}- {red}Stop auto-reply{reset}
-{light_red}[ {red}15{light_red} ] {black}kill <user_id>   {light_red}- {red}Mass spam user{reset}            {light_red}[ {red}16{light_red} ] {black}killend        {light_red}- {red}Stop spam{reset}
+{light_red}[ {red}13{light_red} ] {black}arm @user        {light_red}- {red}Auto-reply multi{reset}        {light_red}[ {red}14{light_red} ] {black}armend         {light_red}- {red}Stop auto-reply{reset}
+{light_red}[ {red}15{light_red} ] {black}kill <user_id>   {light_red}- {red}Mass spam user{reset}         {light_red}[ {red}16{light_red} ] {black}killend        {light_red}- {red}Stop spam{reset}
 
 {red}Group Chat{reset}
-{light_red}[ {red}17{light_red} ] {black}gcfill           {light_red}- {red}Add to GC{reset}                 {light_red}[ {red}18{light_red} ] {black}gcleave        {light_red}- {red}Leave GC{reset}
+{light_red}[ {red}17{light_red} ] {black}gcfill           {light_red}- {red}Add to GC{reset}              {light_red}[ {red}18{light_red} ] {black}gcleave        {light_red}- {red}Leave GC{reset}
 {light_red}[ {red}19{light_red} ] {black}gcleaveall       {light_red}- {red}Leave all GCs{reset}
 
 {red}Status & Presence{reset}
@@ -5808,13 +5766,12 @@ async def multi(ctx):
 
 {light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 {red}Usage Examples:{reset}
-{black}.say 1 Hello world     {light_red}- {red}Send with token 1{reset}        {black}.multivc 123456789 {light_red}- {red}Join VC{reset}
-{black}.say Hello everyone    {light_red}- {red}Send with all tokens{reset}     {black}.reactm 😂 @user   {light_red}- {red}Mass react{reset}
+{black}.say 1 Hello world     {light_red}- {red}Send with token 1{reset}     {black}.multivc 123456789 {light_red}- {red}Join VC{reset}
+{black}.say Hello everyone    {light_red}- {red}Send with all tokens{reset}  {black}.reactm 😂 @user   {light_red}- {red}Mass react{reset}
 {black}.mspam msg1,msg2,msg3 {light_red}- {red}Spam with messages{reset}
 
 {light_red}Note: Make sure token.txt is filled with your tokens!{reset}
-"""
-    await ctx.send(f"```ansi\n{help_content}\n```")
+""")
 
 @bot.command(name="reset")
 async def reset_cmd(ctx):
@@ -6064,7 +6021,8 @@ async def theme(ctx, theme_name: str = None):
 @bot.command()
 async def settings(ctx):
     """Display all settings and configuration commands"""
-    settings_content = fr"""
+    await ctx.message.delete()
+    print(f"""
 {theme_primary} SETTINGS & CONFIGURATION {reset}
 {theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 
@@ -6111,15 +6069,11 @@ async def settings(ctx):
 {theme_secondary}[ {theme_primary}26{theme_secondary} ] {theme_accent}autonick <action> <@user> <nick>{theme_secondary} - {theme_primary}Force nicknames{reset}
 
 {theme_primary}System Settings{reset}
-{theme_secondary}[ {theme_primary}27{theme_secondary} ] {theme_accent}reset                 {theme_secondary}- {theme_primary}Reset selfbot (clear console){reset}
-{theme_secondary}[ {theme_primary}28{theme_secondary} ] {theme_accent}hardreset             {theme_secondary}- {theme_primary}Hard reset (restart process){reset}
-{theme_secondary}[ {theme_primary}29{theme_secondary} ] {theme_accent}reload                {theme_secondary}- {theme_primary}Reload selfbot{reset}
-
 {theme_secondary}[ {theme_primary}27{theme_secondary} ] {theme_accent}prefix <new_prefix>   {theme_secondary}- {theme_primary}Change command prefix{reset}
-{theme_secondary}[ {theme_primary}28{theme_secondary} ] {theme_accent}prefixreset          {theme_secondary}- {theme_primary}Reset prefix to default (.){reset}
-{theme_secondary}[ {theme_primary}29{theme_secondary} ] {theme_accent}reset                {theme_secondary}- {theme_primary}Reset selfbot (clear console){reset}
-{theme_secondary}[ {theme_primary}30{theme_secondary} ] {theme_accent}hardreset            {theme_secondary}- {theme_primary}Hard reset (restart process){reset}
-{theme_secondary}[ {theme_primary}31{theme_secondary} ] {theme_accent}reload               {theme_secondary}- {theme_primary}Reload selfbot{reset}
+{theme_secondary}[ {theme_primary}28{theme_secondary} ] {theme_accent}prefixreset           {theme_secondary}- {theme_primary}Reset prefix to default (.){reset}
+{theme_secondary}[ {theme_primary}29{theme_secondary} ] {theme_accent}reset                 {theme_secondary}- {theme_primary}Reset selfbot (clear console){reset}
+{theme_secondary}[ {theme_primary}30{theme_secondary} ] {theme_accent}hardreset             {theme_secondary}- {theme_primary}Hard reset (restart process){reset}
+{theme_secondary}[ {theme_primary}31{theme_secondary} ] {theme_accent}reload                {theme_secondary}- {theme_primary}Reload selfbot{reset}
 
 {theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 {theme_primary}Current Settings:{reset}
@@ -6128,8 +6082,7 @@ async def settings(ctx):
 {theme_secondary}Prefix: {theme_primary}{PREFIX}{reset}
 
 {theme_secondary}Use {theme_primary}.theme{theme_secondary} to see available color themes!{reset}
-"""
-    await ctx.send(f"```ansi\n{settings_content}\n```")
+""")
 
 theme_primary = red
 theme_secondary = light_red
@@ -8530,5 +8483,23 @@ with open('config.json', 'r') as config_file:
     config = json.load(config_file)
     token = config['TOKEN']
 
-# Use the token
+PLACEHOLDER_TOKENS = {"TOKEN_HERE", "YOUR_TOKEN_HERE", "token_here", "", None}
+if token in PLACEHOLDER_TOKENS or len(str(token).strip()) < 50:
+    print(f"""
+{red}─────────────────────────────────────────────────────────────────
+  XLEGACY | TOKEN NOT SET
+─────────────────────────────────────────────────────────────────
+  No valid token found in config.json.
+
+  Open config.json and replace TOKEN_HERE with your real
+  Discord user token:
+
+      {{"TOKEN": "your_actual_token_here"}}
+
+  You can also place alt tokens in token.txt (one per line).
+─────────────────────────────────────────────────────────────────{reset}
+""")
+    import sys
+    sys.exit(1)
+
 bot.run(token, bot=False)  
