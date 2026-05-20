@@ -31,10 +31,9 @@ import nacl
 import subprocess
 import requests
 import io
-import timedelta
 import time
 from itertools import islice
-from datetime import datetime
+from datetime import datetime, timedelta
 # Add these with your other global variables at the top
 current_theme = "red"  # Default theme
 themes = {
@@ -372,9 +371,6 @@ def load_outlast_messages():
         except Exception as e:
             print(f"Could not create file: {e}")
             return default_messages
-        except Exception as e:
-            print(f"Error loading outlast messages: {e}")
-            return ["Error loading messages"]
 
 
 
@@ -574,11 +570,11 @@ async def menu(ctx):
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢹⡄⠀⠀⠀⠀⠀⠀⢠⡏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢳⠀⠀⠀⠀⠀⠀⡞⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 
-{light_red}[ {light_red}.main {light_red}] {red}Multi Main	{black}[ {light_red}.chatpack {black}] {red}Misc/chatpack
-{black}[ {light_red}.misc {black}] {red}More Misc	{light_red}[ {light_red}.autocmd {light_red}] {red}Auto Cmds/Afk
-{light_red}[ {light_red}.spotify {light_red}] {red}Spotify Control	{black}[ {light_red}.account {black}] {red}Account
-{light_red}[ {light_red}.nsfw {light_red}] {red}NSFW	{black}[ {light_red}.settings {black}] {red}Settings
-{light_red}[ {light_red}.ab {light_red}] {red}Auto Beef	{black}[ {light_red}.multi {black}] {red}Multi-token
+{light_red}[ {light_red}.main {light_red}] {red}Multi Main      {black}[ {light_red}.chatpack {black}] {red}Misc/chatpack
+{black}[ {light_red}.misc {black}] {red}More Misc       {light_red}[ {light_red}.autocmd {light_red}] {red}Auto Cmds/Afk
+{light_red}[ {light_red}.spotify {light_red}] {red}Spotify Control      {black}[ {light_red}.account {black}] {red}Account
+{light_red}[ {light_red}.nsfw {light_red}] {red}NSFW    {black}[ {light_red}.settings {black}] {red}Settings
+{light_red}[ {light_red}.ab {light_red}] {red}Auto Beef {black}[ {light_red}.multi {black}] {red}Multi-token
 
     ```
 """)
@@ -660,7 +656,7 @@ async def outlast(ctx, user: discord.User):
                             pass  # Message might already be deleted
                     
                     # Start deletion task
-                    bot.loop.create_task(delete_after_delay(sent_message))
+                    asyncio.create_task(delete_after_delay(sent_message))
                     
                     await asyncio.sleep(0.66)  
                     
@@ -691,7 +687,7 @@ async def outlast(ctx, user: discord.User):
                 continue
 
     try:
-        task = bot.loop.create_task(outlast_loop())
+        task = asyncio.create_task(outlast_loop())
         outlast_tasks[(user.id, ctx.channel.id)] = task
         await ctx.send(f"```ansi\n{red} XLEGACY | OUTLAST STARTED | DONT FOLD {reset}\n```")
     except Exception as e:
@@ -781,9 +777,9 @@ async def multilast(ctx, user: discord.User):
                 continue
 
     try:
-        task = bot.loop.create_task(multilast_loop())
+        task = asyncio.create_task(multilast_loop())
         multilast_tasks[(user.id, ctx.channel.id)] = task
-        await ctx.send(await ctx.send(f"```ansi\n{red} XLEGACY | OUTLAST STARTED | DONT FOLD {reset}\n```"))
+        await ctx.send(f"```ansi\n{red} XLEGACY | OUTLAST STARTED | DONT FOLD {reset}\n```")
     except Exception as e:
         multilast_running = False
         print(f"Failed to start multilast: {e}")
@@ -1134,7 +1130,7 @@ async def misc(ctx):
 
 async def scrapeconfig(ctx):
     """View and manage scraped PFP folders"""
-    base_dir = r'selfbot\main.py'
+    base_dir = os.path.join(os.getcwd(), 'scraped_pfps')
     
     if not os.path.exists(base_dir):
         await ctx.send(f"```ansi\n{red} XLEGACY | NO PFP FOLDER FOUND |  {reset}\n```")
@@ -1244,7 +1240,7 @@ async def scrapeconfig(ctx):
 @bot.command()
 async def scrapedelete(ctx, folder_name: str = None):
     """Delete specific scraped PFP folders"""
-    base_dir = r'\selfbot\pfps'
+    base_dir = os.path.join(os.getcwd(), 'scraped_pfps')
     
     if not os.path.exists(base_dir):
         await ctx.send(f"```ansi\n{red} XLEGACY | NO PFP FOLDER FOUND |  {reset}\n```")
@@ -1358,39 +1354,35 @@ async def on_message(message):
         # (Hosted invocations are handled above) - no need to double-invoke
 
 
-    async def _delayed_delete_message(message, delay=3):
-        """Delete a provided message after a delay, ignoring failures."""
+async def _delayed_delete_message(message, delay=3):
+    """Delete a provided message after a delay, ignoring failures."""
+    try:
+        await asyncio.sleep(delay)
+        await message.delete()
+    except Exception:
+        return
+
+
+@bot.event
+async def on_command_completion(ctx):
+    """After a command completes, schedule deletion of any bot-sent messages in the channel that were created after the invoking user message."""
+    try:
+        if ctx.message.author == bot.user:
+            asyncio.create_task(_delayed_delete_message(ctx.message, 3))
         try:
-            await asyncio.sleep(delay)
-            await message.delete()
+            if ((str(ctx.message.author.id) in hosted_users) or (ctx.message.author.id in hosted_users)) and ctx.guild is not None:
+                perms = ctx.channel.permissions_for(ctx.guild.me)
+                if perms and perms.manage_messages:
+                    asyncio.create_task(_delayed_delete_message(ctx.message, 3))
         except Exception:
-            return
-
-
-    @bot.event
-    async def on_command_completion(ctx):
-        """After a command completes, schedule deletion of any bot-sent messages in the channel that were created after the invoking user message."""
-        try:
-            # Look for bot messages sent after the command invocation and delete them after a small delay
-            # Also schedule deletion of the invoking message if it was authored by the bot (so the owner's command disappears)
-            if ctx.message.author == bot.user:
-                asyncio.create_task(_delayed_delete_message(ctx.message, 3))
-            # Try to delete hosted user command messages if the bot has permissions
-            try:
-                if ((str(ctx.message.author.id) in hosted_users) or (ctx.message.author.id in hosted_users)) and ctx.guild is not None:
-                    perms = ctx.channel.permissions_for(ctx.guild.me)
-                    if perms and perms.manage_messages:
-                        asyncio.create_task(_delayed_delete_message(ctx.message, 3))
-            except Exception:
-                pass
-
-            async for message in ctx.channel.history(limit=25, after=ctx.message.created_at):
-                if message.author == bot.user:
-                    # don't block the event loop - schedule deletion
-                    asyncio.create_task(_delayed_delete_message(message, 3))
-        except Exception:
-            # Just ignore any failures here
             pass
+
+        async for message in ctx.channel.history(limit=25, after=ctx.message.created_at):
+            if message.author == bot.user:
+                asyncio.create_task(_delayed_delete_message(message, 3))
+    except Exception:
+        pass
+
 @bot.command()
 async def autoreactoff(ctx, user: discord.User):
     if user.id in autoreact_users:
@@ -1880,60 +1872,58 @@ async def tempvc(ctx, name: str = "xlegacy VC", duration: int = 5, unit: str = '
 @bot.command()
 async def roblox(ctx, *, username: str):
     async with ctx.typing():
-        # Search for user
-        user_search_url = "https://users.roblox.com/v1/usernames/users"
-        response = requests.post(user_search_url, json={"usernames": [username]})
+        async with aiohttp.ClientSession() as session:
+            # Search for user
+            user_search_url = "https://users.roblox.com/v1/usernames/users"
+            async with session.post(user_search_url, json={"usernames": [username]}) as response:
+                if response.status != 200:
+                    await ctx.send(f"```ansi\n{red} XLEGACY | ROBLOX ERROR | {response.status} |  {reset}\n```")
+                    return
+                user_data = await response.json()
 
-        if response.status_code != 200:
-            await ctx.send(f"```ansi\n{red} XLEGACY | ROBLOX ERROR | {response.status_code} |  {reset}\n```")
-            return
+            if 'data' not in user_data or len(user_data['data']) == 0:
+                await ctx.send(f"```ansi\n{red} XLEGACY | USER NOT FOUND | {username} |  {reset}\n```")
+                return
 
-        user_data = response.json()
-        if 'data' not in user_data or len(user_data['data']) == 0:
-            await ctx.send(f"```ansi\n{red} XLEGACY | USER NOT FOUND | {username} |  {reset}\n```")
-            return
+            roblox_user = user_data['data'][0]
+            roblox_id = roblox_user.get('id')
+            roblox_name = roblox_user.get('name', "Unknown User")
+            roblox_display_name = roblox_user.get('displayName', roblox_name)
 
-        roblox_user = user_data['data'][0]
-        roblox_id = roblox_user.get('id')
-        roblox_name = roblox_user.get('name', "Unknown User")
-        roblox_display_name = roblox_user.get('displayName', roblox_name)
+            # Get user info
+            user_info_url = f"https://users.roblox.com/v1/users/{roblox_id}"
+            async with session.get(user_info_url) as user_info_response:
+                if user_info_response.status != 200:
+                    await ctx.send(f"```ansi\n{red} XLEGACY | USER INFO ERROR |  {reset}\n```")
+                    return
+                user_info = await user_info_response.json()
 
-        # Get user info
-        user_info_url = f"https://users.roblox.com/v1/users/{roblox_id}"
-        user_info_response = requests.get(user_info_url)
+            roblox_bio = user_info.get('description', "No bio available")
+            created_at = user_info.get('created', None)
 
-        if user_info_response.status_code != 200:
-            await ctx.send(f"```ansi\n{red} XLEGACY | USER INFO ERROR |  {reset}\n```")
-            return
+            # Get follower count
+            follower_count_url = f"https://friends.roblox.com/v1/users/{roblox_id}/followers/count"
+            async with session.get(follower_count_url) as follower_response:
+                follower_count = (await follower_response.json()).get('count', 0) if follower_response.status == 200 else 0
 
-        user_info = user_info_response.json()
-        roblox_bio = user_info.get('description', "No bio available")
-        created_at = user_info.get('created', None)
-        
-        # Get follower count
-        follower_count_url = f"https://friends.roblox.com/v1/users/{roblox_id}/followers/count"
-        follower_response = requests.get(follower_count_url)
-        follower_count = follower_response.json().get('count', 0) if follower_response.status_code == 200 else 0
-        
-        # Get following count
-        following_count_url = f"https://friends.roblox.com/v1/users/{roblox_id}/followings/count"
-        following_response = requests.get(following_count_url)
-        following_count = following_response.json().get('count', 0) if following_response.status_code == 200 else 0
+            # Get following count
+            following_count_url = f"https://friends.roblox.com/v1/users/{roblox_id}/followings/count"
+            async with session.get(following_count_url) as following_response:
+                following_count = (await following_response.json()).get('count', 0) if following_response.status == 200 else 0
 
-        # Get avatar image
-        avatar_url = f"https://www.roblox.com/headshot-thumbnail/image?userId={roblox_id}&width=420&height=420&format=png"
-        
-        # Get presence status
-        presence_url = "https://presence.roblox.com/v1/presence/users"
-        presence_response = requests.post(presence_url, json={"userIds": [roblox_id]})
-        
-        presence_status = "Offline"
-        if presence_response.status_code == 200:
-            presence_data = presence_response.json()
-            if presence_data['userPresences']:
-                user_presence = presence_data['userPresences'][0]
-                presence_types = ["Offline", "Online", "In Game", "In Studio"]
-                presence_status = presence_types[user_presence.get('userPresenceType', 0)]
+            # Get avatar image
+            avatar_url = f"https://www.roblox.com/headshot-thumbnail/image?userId={roblox_id}&width=420&height=420&format=png"
+
+            # Get presence status
+            presence_url = "https://presence.roblox.com/v1/presence/users"
+            async with session.post(presence_url, json={"userIds": [roblox_id]}) as presence_response:
+                presence_status = "Offline"
+                if presence_response.status == 200:
+                    presence_data = await presence_response.json()
+                    if presence_data['userPresences']:
+                        user_presence = presence_data['userPresences'][0]
+                        presence_types = ["Offline", "Online", "In Game", "In Studio"]
+                        presence_status = presence_types[user_presence.get('userPresenceType', 0)]
 
         # Format creation date
         if created_at:
@@ -2499,8 +2489,8 @@ async def count_down(token, channel_id, message):
         'Content-Type': 'application/json'
     }
 
-    while True:
-        async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession() as session:
+        while True:
             payload = {'content': message}
             async with session.post(f'https://discord.com/api/v9/channels/{channel_id}/messages', headers=headers, json=payload) as resp:
                 if resp.status == 200:
@@ -2813,6 +2803,8 @@ async def autonuke(ctx, action: str, user: discord.Member = None):
     
     else:
         await ctx.send(f"```ansi\n{red} XLEGACY | INVALID ACTION | USE TOGGLE/LIST/CLEAR |  {reset}\n```")
+webhook_spam = False
+
 @bot.command()
 async def destroy(ctx):
     global webhook_spam
@@ -3118,22 +3110,22 @@ async def laz(ctx, user: discord.User, name1: str, name2: str = None):
             'Authorization': token,
             'Content-Type': 'application/json'
         }
-        
-        while laz_running.get(channel_id, False) and token in valid_tokens:
-            try:
-                if message_index >= len(laz_wordlist):
-                    message_index = 0
-                    
-                message = laz_wordlist[message_index]
-                formatted_message = (message
-                    .replace("{mention}", user.mention)
-                    .replace("{name1}", name1)
-                    .replace("{name2}", name2 if name2 else "")
-                )
-                
-                payload = {'content': formatted_message}
-                
-                async with aiohttp.ClientSession() as session:
+
+        async with aiohttp.ClientSession() as session:
+            while laz_running.get(channel_id, False) and token in valid_tokens:
+                try:
+                    if message_index >= len(laz_wordlist):
+                        message_index = 0
+
+                    message = laz_wordlist[message_index]
+                    formatted_message = (message
+                        .replace("{mention}", user.mention)
+                        .replace("{name1}", name1)
+                        .replace("{name2}", name2 if name2 else "")
+                    )
+
+                    payload = {'content': formatted_message}
+
                     async with session.post(
                         f'https://discord.com/api/v9/channels/{channel_id}/messages',
                         headers=headers,
@@ -3147,19 +3139,19 @@ async def laz(ctx, user: discord.User, name1: str, name2: str = None):
                             await asyncio.sleep(retry_after)
                             continue
                         elif resp.status == 403:
-                            valid_tokens.remove(token)
+                            valid_tokens.discard(token)
                             break
                         else:
                             await asyncio.sleep(random.uniform(3, 5))
                             continue
-                            
-            except Exception as e:
-                await asyncio.sleep(random.uniform(3, 5))
-                continue
+
+                except Exception as e:
+                    await asyncio.sleep(random.uniform(3, 5))
+                    continue
     
     tasks = []
     for token in valid_tokens:
-        task = bot.loop.create_task(send_laz_messages(token))
+        task = asyncio.create_task(send_laz_messages(token))
         tasks.append(task)
     
     laz_tasks[channel_id] = tasks
@@ -3375,7 +3367,7 @@ async def stream(ctx, *, statuses_list: str):
     if status_changing_task:
         status_changing_task.cancel()
     
-    status_changing_task = bot.loop.create_task(change_status_with_images())
+    status_changing_task = asyncio.create_task(change_status_with_images())
     
     status_count = len(statuses)
     image_count = sum(1 for s in statuses if s["image_url"])
@@ -3627,12 +3619,12 @@ async def setbio(ctx, *, bio_text: str):
     url_api_info = "https://discord.com/api/v9/users/%40me/profile"
     
     try:
-        response = requests.patch(url_api_info, headers=headers, json=new_bio)
-
-        if response.status_code == 200:
-            await ctx.send(f"```ansi\n{red} XLEGACY | BIO UPDATED |  {reset}\n```")
-        else:
-            await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO UPDATE BIO | {response.status_code} |  {reset}\n```")
+        async with aiohttp.ClientSession() as session:
+            async with session.patch(url_api_info, headers=headers, json=new_bio) as response:
+                if response.status == 200:
+                    await ctx.send(f"```ansi\n{red} XLEGACY | BIO UPDATED |  {reset}\n```")
+                else:
+                    await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO UPDATE BIO | {response.status} |  {reset}\n```")
 
     except Exception as e:
         await ctx.send(f"```ansi\n{red} XLEGACY | ERROR: {str(e)} |  {reset}\n```")
@@ -3663,22 +3655,23 @@ async def bio_rotator():
     }
     url_api_info = "https://discord.com/api/v9/users/%40me/profile"
 
-    while bio_phrases:
-        new_bio = {"bio": bio_phrases[bio_index]}
+    async with aiohttp.ClientSession() as session:
+        while bio_phrases:
+            new_bio = {"bio": bio_phrases[bio_index]}
 
-        try:
-            response = requests.patch(url_api_info, headers=headers, json=new_bio)
-            if response.status_code == 200:
-                print(f"{red}Bio updated to: {bio_phrases[bio_index]}{reset}")
-            else:
-                print(f"{light_red}Failed to update bio: {response.status_code}{reset}")
+            try:
+                async with session.patch(url_api_info, headers=headers, json=new_bio) as response:
+                    if response.status == 200:
+                        print(f"{red}Bio updated to: {bio_phrases[bio_index]}{reset}")
+                    else:
+                        print(f"{light_red}Failed to update bio: {response.status}{reset}")
 
-            bio_index = (bio_index + 1) % len(bio_phrases)
+                bio_index = (bio_index + 1) % len(bio_phrases)
 
-        except Exception as e:
-            print(f"{light_red}Bio rotation error: {e}{reset}")
-            return
-        await asyncio.sleep(3600)
+            except Exception as e:
+                print(f"{light_red}Bio rotation error: {e}{reset}")
+                return
+            await asyncio.sleep(3600)
 
 @bot.command()
 async def stoprotatebio(ctx):
@@ -3705,12 +3698,12 @@ async def setpronoun(ctx, *, pronoun: str):
     url_api_info = "https://discord.com/api/v9/users/%40me/profile"
 
     try:
-        response = requests.patch(url_api_info, headers=headers, json=new_name)
-
-        if response.status_code == 200:
-            await ctx.send(f"```ansi\n{red} XLEGACY | PRONOUN UPDATED | {pronoun} |  {reset}\n```")
-        else:
-            await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO UPDATE PRONOUN | {response.status_code} |  {reset}\n```")
+        async with aiohttp.ClientSession() as session:
+            async with session.patch(url_api_info, headers=headers, json=new_name) as response:
+                if response.status == 200:
+                    await ctx.send(f"```ansi\n{red} XLEGACY | PRONOUN UPDATED | {pronoun} |  {reset}\n```")
+                else:
+                    await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO UPDATE PRONOUN | {response.status} |  {reset}\n```")
 
     except Exception as e:
         await ctx.send(f"```ansi\n{red} XLEGACY | ERROR: {str(e)} |  {reset}\n```")
@@ -3737,24 +3730,24 @@ class PronounRotationTask:
         }
         url_api_info = "https://discord.com/api/v9/users/%40me/profile"
 
-        while True:
-            try:
-                current_pronoun = self.pronouns[self.index]
-                self.index = (self.index + 1) % len(self.pronouns)
+        async with aiohttp.ClientSession() as session:
+            while True:
+                try:
+                    current_pronoun = self.pronouns[self.index]
+                    self.index = (self.index + 1) % len(self.pronouns)
 
-                response = requests.patch(url_api_info, headers=headers, json={"pronouns": current_pronoun})
+                    async with session.patch(url_api_info, headers=headers, json={"pronouns": current_pronoun}) as response:
+                        if response.status == 200:
+                            await self.ctx.send(f"```ansi\n{red} XLEGACY | PRONOUN UPDATED | {current_pronoun} |  {reset}\n```")
+                        else:
+                            await self.ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO UPDATE PRONOUN | {response.status} |  {reset}\n```")
+                            break
 
-                if response.status_code == 200:
-                    await self.ctx.send(f"```ansi\n{red} XLEGACY | PRONOUN UPDATED | {current_pronoun} |  {reset}\n```")
-                else:
-                    await self.ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO UPDATE PRONOUN | {response.status_code} |  {reset}\n```")
+                    await asyncio.sleep(3600)
+
+                except Exception as e:
+                    await self.ctx.send(f"```ansi\n{red} XLEGACY | ERROR: {str(e)} |  {reset}\n```")
                     break
-
-                await asyncio.sleep(3600)
-
-            except Exception as e:
-                await self.ctx.send(f"```ansi\n{red} XLEGACY | ERROR: {str(e)} |  {reset}\n```")
-                break
 
 @bot.command()
 async def rotatepronoun(ctx, *pronouns):
@@ -3802,7 +3795,7 @@ async def channelrotate(ctx, channel: discord.TextChannel, *names: str):
         except Exception as e:
             await ctx.send(f"```ansi\n{red} XLEGACY | ERROR: {str(e)} |  {reset}\n```")
     
-    task = bot.loop.create_task(rotate_names())
+    task = asyncio.create_task(rotate_names())
     rotation_tasks[channel.id] = task
 
 @bot.command()
@@ -3922,10 +3915,12 @@ async def mutualinfo(ctx, member: discord.User):
     }
 
     try:
-        response = requests.get(url, headers=headers)
-        data = response.json()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                data = await response.json()
+                response_status = response.status
 
-        if response.status_code == 200:
+        if response_status == 200:
             user_info = data.get("user", {})
             mutual_guilds = data.get("mutual_guilds", [])
             mutual_friends = data.get("mutual_friends", [])
@@ -3985,30 +3980,32 @@ async def mutualinfo(ctx, member: discord.User):
 async def stealbio(ctx, member: discord.User):
     url = f"https://discord.com/api/v9/users/{member.id}/profile?with_mutual_guilds=true&with_mutual_friends=true"
     headers = {
-        "Authorization": bot.http.token
+        "Authorization": bot.http.token,
+        "Content-Type": "application/json"
     }
 
     try:
-        response = requests.get(url, headers=headers)
-        data = response.json()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                data = await response.json()
+                get_status = response.status
 
-        if response.status_code == 200:
-            target_bio = data.get("user", {}).get("bio", None)
+            if get_status == 200:
+                target_bio = data.get("user", {}).get("bio", None)
 
-            if target_bio:
-                set_bio_url = "https://discord.com/api/v9/users/@me/profile"
-                new_bio = {"bio": target_bio}
+                if target_bio:
+                    set_bio_url = "https://discord.com/api/v9/users/@me/profile"
+                    new_bio = {"bio": target_bio}
 
-                update_response = requests.patch(set_bio_url, headers=headers, json=new_bio)
-
-                if update_response.status_code == 200:
-                    await ctx.send(f"```ansi\n{red} XLEGACY | BIO STOLEN |  {reset}\n```")
+                    async with session.patch(set_bio_url, headers=headers, json=new_bio) as update_response:
+                        if update_response.status == 200:
+                            await ctx.send(f"```ansi\n{red} XLEGACY | BIO STOLEN |  {reset}\n```")
+                        else:
+                            await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO STEAL BIO | {update_response.status} |  {reset}\n```")
                 else:
-                    await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO STEAL BIO | {update_response.status_code} |  {reset}\n```")
+                    await ctx.send(f"```ansi\n{red} XLEGACY | NO BIO TO COPY |  {reset}\n```")
             else:
-                await ctx.send(f"```ansi\n{red} XLEGACY | NO BIO TO COPY |  {reset}\n```")
-        else:
-            await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO GET USER DATA | {response.status_code} |  {reset}\n```")
+                await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO GET USER DATA | {get_status} |  {reset}\n```")
 
     except Exception as e:
         await ctx.send(f"```ansi\n{red} XLEGACY | ERROR: {str(e)} |  {reset}\n```")
@@ -5035,13 +5032,9 @@ async def rape(ctx, user: discord.User):
     rape_running[(user.id, channel_id)] = True
     
     async def rape_loop():
-        try:
-            with open(r'\selfbot\outlast_messages.txt', 'r', encoding='utf-8') as f:
-                messages = [line.strip() for line in f if line.strip()]
-        except FileNotFoundError:
-            await ctx.send(f"```ansi\n{red} XLEGACY | OUTLAST MESSAGES FILE NOT FOUND |  {reset}\n```")
-            return
-            
+        messages = load_outlast_messages()
+        if not messages:
+            messages = ["You can't escape me"]
         counter = 1
         while rape_running.get((user.id, channel_id), False):
             try:
@@ -5054,7 +5047,7 @@ async def rape(ctx, user: discord.User):
                 await asyncio.sleep(1)
                 continue
                 
-    task = bot.loop.create_task(rape_loop())
+    task = asyncio.create_task(rape_loop())
     rape_tasks[(user.id, channel_id)] = task
     await ctx.send(f"```ansi\n{red} XLEGACY | RAPE STARTED | {user.name}  DONT FOLD BC I WONT DIE |  {reset}\n```")
 
@@ -5131,7 +5124,7 @@ async def ar(ctx, user: discord.User):
                 await asyncio.sleep(1)
                 continue
 
-    task = bot.loop.create_task(reply_loop())
+    task = asyncio.create_task(reply_loop())
     autoreply_tasks[(user.id, channel_id)] = task
 
 @bot.command()
@@ -5241,7 +5234,7 @@ async def arm(ctx, user: discord.User):
                 await asyncio.sleep(1)
                 continue
 
-    task = bot.loop.create_task(reply_loop())
+    task = asyncio.create_task(reply_loop())
     arm_tasks[(user.id, channel_id)] = task
 
 @bot.command()
@@ -5349,7 +5342,7 @@ async def kill(ctx, user_id: str):
 
             await asyncio.sleep(0.5 + random.uniform(0.5, 1.5))
 
-    task = bot.loop.create_task(kill_loop())
+    task = asyncio.create_task(kill_loop())
     kill_tasks[(user_id, channel_id)] = task
 
     await ctx.send(f"```ansi\n{red} XLEGACY | KILL STARTED | {len(selected_tokens)} TOKENS |  {reset}\n```")
@@ -5404,7 +5397,7 @@ async def gc(ctx):
             await asyncio.gather(*tasks)
             await asyncio.sleep(0.5)
 
-    task = bot.loop.create_task(gc_loop())
+    task = asyncio.create_task(gc_loop())
     gc_tasks[channel_id] = task
     await ctx.send(f"```ansi\n{red} XLEGACY | GC NAME SPAM STARTED |  {reset}\n```")
 
