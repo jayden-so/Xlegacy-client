@@ -535,6 +535,8 @@ async def on_ready():
     except Exception as e:
         print(f"{theme_secondary}⚠️ Error in hosted bots auto-start: {e}{reset}")
 
+    asyncio.create_task(console_loop())
+
     
 @bot.command()
 async def menu(ctx):
@@ -576,7 +578,47 @@ async def menu(ctx):
 {light_red}[ {light_red}.nsfw {light_red}] {red}NSFW    {black}[ {light_red}.settings {black}] {red}Settings
 {light_red}[ {light_red}.ab {light_red}] {red}Auto Beef {black}[ {light_red}.multi {black}] {red}Multi-token
 {reset}""")
-    
+
+@bot.command()
+async def autocmd(ctx):
+    await ctx.message.delete()
+    print(f"""
+                {black}─────────────────────────────────────XLEGACY─────────────────────────
+                           {red} ──────────────────── XLEGACY |  MADE BY @unholxy {light_red} V.1 ────────────────────
+                {black}─────────────────────────────────────AUTOCMD─────────────────────────{red}
+
+{red}Auto React{reset}
+{light_red}[ {red}1{light_red} ] {black}autoreact <@user> <emoji>  {light_red}[ {red}2{light_red} ] {black}autoreactoff <@user>
+{light_red}[ {red}3{light_red} ] {black}dreact <@user> <emojis>    {light_red}[ {red}4{light_red} ] {black}dreactoff <@user>
+{light_red}[ {red}5{light_red} ] {black}mreact <emoji> <@user>     {light_red}[ {red}6{light_red} ] {black}mreactoff
+
+{red}Auto Response / Ping{reset}
+{light_red}[ {red}7{light_red} ] {black}pingresponse <on/off> <msg>{light_red}[ {red}8{light_red} ] {black}pinginsult <on/off>
+{light_red}[ {red}9{light_red} ] {black}pingreact <on/off> <emoji>
+
+{red}Auto Spam / Mirror{reset}
+{light_red}[ {red}10{light_red} ] {black}spam <message>             {light_red}[ {red}11{light_red} ] {black}spamoff
+{light_red}[ {red}12{light_red} ] {black}cord <@user>               {light_red}[ {red}13{light_red} ] {black}cordoff
+{light_red}[ {red}14{light_red} ] {black}mimic <@user>              {light_red}[ {red}15{light_red} ] {black}mimicoff
+{light_red}[ {red}16{light_red} ] {black}fake_active                {light_red}[ {red}17{light_red} ] {black}fake_active_off
+
+{red}Auto Countdown / Popout{reset}
+{light_red}[ {red}18{light_red} ] {black}countdown <@user> <n>      {light_red}[ {red}19{light_red} ] {black}countdownoff
+{light_red}[ {red}20{light_red} ] {black}mcountdown <@user> <n>     {light_red}[ {red}21{light_red} ] {black}mcountdownoff
+{light_red}[ {red}22{light_red} ] {black}popout <@user>             {light_red}[ {red}23{light_red} ] {black}popoutstop
+
+{red}Auto Moderation{reset}
+{light_red}[ {red}24{light_red} ] {black}autonick <on/off> <@user> <nick>
+{light_red}[ {red}25{light_red} ] {black}forcepurge <on/off> <@user>
+{light_red}[ {red}26{light_red} ] {black}autonuke <on/off> <@user>
+
+{red}Status & Profile Rotation{reset}
+{light_red}[ {red}27{light_red} ] {black}rstatus <s1,s2,...>        {light_red}[ {red}28{light_red} ] {black}rstatusstop
+{light_red}[ {red}29{light_red} ] {black}stream <"text" "img_url">
+{light_red}[ {red}30{light_red} ] {black}rotatebio <p1,p2,...>      {light_red}[ {red}31{light_red} ] {black}rotatepronoun <p1,p2,...>
+
+{reset}""")
+
 # MAIN COMMANDS
 
 @bot.command()
@@ -8476,6 +8518,137 @@ async def tleaveserver(ctx, server_id: str = None, token_input: str = None):
     
     await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | SERVER LEAVE COMPLETE | SUCCESS: {success_count} | FAILED: {failed_count} |  {reset}\n```")
 
+
+
+class _MockMessage:
+    id = 0
+    async def delete(self):
+        pass
+    async def edit(self, content=None, **kwargs):
+        if content:
+            print(content)
+
+class _MockChannel:
+    id = 0
+    type = None
+    async def send(self, content=None, **kwargs):
+        if content:
+            print(content)
+        return _MockMessage()
+    async def history(self, *args, **kwargs):
+        return
+        yield
+
+class _MockGuild:
+    id = 0
+    name = "Console"
+
+class ConsoleContext:
+    def __init__(self):
+        self.message = _MockMessage()
+        self.channel = _MockChannel()
+        self.author = None
+        self.guild = _MockGuild()
+        self.bot = bot
+        self.prefix = PREFIX
+        self.invoked_with = ""
+        self.command = None
+        self.args = []
+        self.kwargs = {}
+        self.voice_client = None
+        self.me = None
+
+    async def send(self, content=None, **kwargs):
+        if content:
+            print(content)
+        return _MockMessage()
+
+    async def reply(self, content=None, **kwargs):
+        if content:
+            print(content)
+        return _MockMessage()
+
+    async def invoke(self, cmd, *args, **kwargs):
+        try:
+            await cmd(self, *args, **kwargs)
+        except Exception as e:
+            print(f"{red}[Console] Error invoking command: {e}{reset}")
+
+_CONSOLE_CATEGORIES = {
+    "main", "misc", "autocmd", "spotify", "account",
+    "nsfw", "settings", "ab", "multi", "chatpack", "menu",
+}
+
+_CONSOLE_BANNER = fr"""
+{red}
+ __   ___      ______ _____          _______     __
+ \ \ / / |    |  ____/ ____|   /\   / ____\ \   / /
+  \ V /| |    | |__ | |  __   /  \ | |     \ \_/ / 
+   > < | |    |  __|| | |_ | / /\ \| |      \   /  
+  / . \| |____| |___| |__| |/ ____ \ |____   | |   
+ /_/ \_\______|______\_____/_/    \_\_____|  |_|   
+{reset}
+{light_red}─────────────────────────────────────────────────────────────────{reset}
+{red}  XLEGACY CONSOLE  |  Type a category or command below{reset}
+{light_red}─────────────────────────────────────────────────────────────────{reset}
+{red}Categories:{reset}  {light_red}main  misc  autocmd  spotify  account  nsfw{reset}
+             {light_red}settings  ab  multi  chatpack  menu{reset}
+{light_red}─────────────────────────────────────────────────────────────────{reset}
+{red}  Tip: type "menu" to see the full command list{reset}
+{light_red}─────────────────────────────────────────────────────────────────{reset}
+"""
+
+async def console_loop():
+    await bot.wait_until_ready()
+    ctx = ConsoleContext()
+    ctx.author = bot.user
+    ctx.me = bot.user
+
+    print(_CONSOLE_BANNER)
+
+    loop = asyncio.get_event_loop()
+    while True:
+        try:
+            raw = await loop.run_in_executor(None, sys.stdin.readline)
+            if raw is None:
+                break
+            line = raw.strip()
+            if not line:
+                continue
+
+            parts = line.split()
+            cmd_name = parts[0].lstrip(PREFIX).lower()
+            args_str = line[len(parts[0]):].strip()
+
+            cmd = bot.get_command(cmd_name)
+            if cmd is None:
+                print(f"{light_red}[Console] Unknown command '{cmd_name}'. Try 'menu' for a list.{reset}")
+                continue
+
+            ctx.invoked_with = cmd_name
+            ctx.command = cmd
+            ctx.prefix = PREFIX
+
+            try:
+                if args_str:
+                    await ctx.invoke(cmd, args_str)
+                else:
+                    await ctx.invoke(cmd)
+            except TypeError:
+                try:
+                    await ctx.invoke(cmd)
+                except Exception as e:
+                    print(f"{light_red}[Console] {e}{reset}")
+            except Exception as e:
+                print(f"{light_red}[Console] {e}{reset}")
+
+        except asyncio.CancelledError:
+            break
+        except EOFError:
+            break
+        except Exception as e:
+            print(f"{light_red}[Console] Loop error: {e}{reset}")
+            await asyncio.sleep(0.5)
 
 
 # Read token from config.json
