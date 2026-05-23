@@ -105,6 +105,21 @@ themes = {
     }
 }
 
+# Helper to refresh theme variables whenever current_theme changes
+def apply_theme(theme_name=None):
+    global theme_primary, theme_secondary, theme_accent, current_theme
+    if theme_name:
+        current_theme = theme_name
+    t = themes.get(current_theme, themes["red"])
+    theme_primary   = t["primary"]
+    theme_secondary = t["secondary"]
+    theme_accent    = t["accent"]
+
+# Initialise theme variables immediately so they exist before any other code runs
+theme_primary   = themes["red"]["primary"]
+theme_secondary = themes["red"]["secondary"]
+theme_accent    = themes["red"]["accent"]
+
 
 import warnings
 warnings.simplefilter("ignore", SyntaxWarning)
@@ -172,6 +187,7 @@ cord_mode = False
 autopress_messages = {}
 autopress_status = {}
 autoreact_users = {}
+supereact_users = {}   # user_id -> [emoji1, emoji2, ...]
 dreact_users = {} 
 autokill_messages = {}
 autokill_status = {}
@@ -234,10 +250,6 @@ bot = commands.Bot(command_prefix=PREFIX, self_bot=True)
 HOST_CONFIG_FILE = "host_config.json"
 hosted_users = {}
 host_clients = {}
-# Add these with your other global variables at the top
-HOST_CONFIG_FILE = "host_config.json"
-hosted_users = {}
-host_clients = {}
 hosted_command_handlers = {}
 
 
@@ -256,21 +268,176 @@ def save_hosted_users():
 
 
 def load_hosted_users():
-    """Load hosted users from HOST_CONFIG_FILE."""
     global hosted_users
     try:
         if os.path.exists(HOST_CONFIG_FILE):
-            with open(HOST_CONFIG_FILE, 'r') as f:
+            with open(HOST_CONFIG_FILE, 'r', encoding='utf-8') as f:
                 hosted_users = json.load(f)
         else:
             hosted_users = {}
             save_hosted_users()
-    except Exception as e:
-        try:
-            print(f"{theme_primary}Error loading host config: {e}{reset}")
-        except Exception:
-            print("Error loading host config: ", e)
+    except Exception:
         hosted_users = {}
+
+def make_hosted_bot(token: str, username: str):
+    """
+    Create a fully independent selfbot for a hosted token.
+    Registers all commands from the main bot so the hosted user
+    has access to the full command set running under their own account.
+    """
+    hbot = commands.Bot(
+        command_prefix=PREFIX,
+        self_bot=True,
+        help_command=None,
+        chunk_guilds_at_startup=False,
+        guild_subscriptions=False,
+    )
+
+    # Force user-token login — never prepend "Bot " to the auth header
+    # Also store the raw token directly on hbot so _safe_react can always
+    # retrieve it reliably without depending on http.token internals
+    hbot._raw_token = token
+    original_start = hbot.start
+    async def patched_start(token_str, *, bot=False):
+        hbot._raw_token = token_str  # keep in sync if token changes
+        return await original_start(token_str, bot=False)
+    hbot.start = patched_start
+
+    # Register every command from the main bot onto this hosted instance.
+    # We iterate bot.commands AFTER this function is called (at startup),
+    # so all commands are already registered on the main bot by then.
+    def _sync_commands():
+        """Clone commands from the main bot onto the hosted bot."""
+        for cmd in list(bot.commands):
+            if cmd.name in ("host",):
+                continue
+
+            try:
+                hbot.remove_command(cmd.name)
+            except Exception:
+                pass
+
+            try:
+                # IMPORTANT:
+                # We MUST copy the command object.
+                # Reusing the same command instance across multiple bots
+                # causes invoke/process issues where commands only send the
+                # raw message instead of executing properly.
+                cloned = cmd.copy()
+                hbot.add_command(cloned)
+            except Exception as e:
+                print(f"{light_red}[HOST:{username}] Failed to sync command {cmd.name}: {e}{reset}")
+
+    @hbot.event
+    async def on_ready():
+        _sync_commands()
+        # Re-confirm _raw_token using the actual HTTP token after login
+        hbot._raw_token = hbot.http.token
+        print(f"{red}[HOST] {hbot.user} ready — {len(hbot.commands)} commands loaded{reset}")
+        tok = hbot._raw_token
+        print(f"{red}[HOST] token preview: {tok[:4]}...{tok[-4:] if tok else '?'}{reset}")
+
+    @hbot.event
+    async def on_message(message):
+        try:
+            # -------------------------
+            # REACTION AUTOMATION
+            # -------------------------
+            if message.author.id != hbot.user.id:
+                mid = message.author.id
+
+                if mid in autoreact_users:
+                    emojis = autoreact_users[mid]
+                    if isinstance(emojis, str):
+                        emojis = [emojis]
+
+                    for emoji in emojis:
+                        await _safe_react(message, emoji, label="autoreact", client=hbot)
+                        await asyncio.sleep(0.3)
+
+                if mid in supereact_users:
+                    for emoji in supereact_users[mid]:
+                        await _safe_react(message, emoji, label="supereact", client=hbot)
+                        await asyncio.sleep(0.3)
+
+                if mid in dreact_users:
+                    dreact_data = dreact_users[mid]
+                    emoji_list, idx = dreact_data[0], dreact_data[1]
+
+                    if emoji_list:
+                        current_emoji = emoji_list[idx % len(emoji_list)]
+                        dreact_users[mid][1] = (idx + 1) % len(emoji_list)
+
+                        await _safe_react(
+                            message,
+                            current_emoji,
+                            label="dreact",
+                            client=hbot
+                        )
+
+                return
+
+            # -------------------------
+            # COMMAND PROCESSING
+            # -------------------------
+            if not message.content.startswith(PREFIX):
+                return
+
+            print(f"{red}[HOST:{username}] Processing command: {message.content}{reset}")
+
+            # process_commands is MUCH more reliable than manually invoking
+            # shared command contexts across multiple selfbot instances
+            await hbot.process_commands(message)
+
+        except Exception as e:
+            print(f"{light_red}[HOST:{username}] on_message error: {e}{reset}")
+
+    @hbot.event
+    async def on_command_error(ctx, error):
+        if isinstance(error, commands.CommandNotFound):
+            print(f"{light_red}[HOST:{username}] Command not found: {ctx.invoked_with}{reset}")
+        else:
+            print(f"{light_red}[HOST:{username}] Error in {ctx.command}: {error}{reset}")
+
+    return hbot
+
+
+async def _start_hosted_client(user_id: str, token: str, username: str):
+    """Build and start an independent bot for a hosted token.
+    Removes the user from hosted_users if the token is invalid.
+    """
+    if user_id in host_clients:
+        return  # already running
+
+    hbot = make_hosted_bot(token, username)
+    # Store BEFORE start so we can clean up on failure
+    host_clients[user_id] = hbot
+    try:
+        # bot=False ensures the token is used as a user token, not a bot token
+        await hbot.start(token, bot=False)
+    except discord.LoginFailure:
+        print(f"{light_red}[HOST] Invalid token for {username} — removing{reset}")
+        host_clients.pop(user_id, None)
+        # Remove from saved list so it doesn't retry on next restart
+        hosted_users.pop(user_id, None)
+        save_hosted_users()
+    except Exception as e:
+        print(f"{light_red}[HOST] Error starting {username}: {e}{reset}")
+        host_clients.pop(user_id, None)
+
+
+async def restore_hosted_clients():
+    """Re-connect any hosted tokens saved from a previous session."""
+    await bot.wait_until_ready()
+    for user_id, val in list(hosted_users.items()):
+        if not isinstance(val, dict):
+            continue
+        token    = val.get("token")
+        username = val.get("username", user_id)
+        if not token or user_id in host_clients:
+            continue
+        print(f"{red}[HOST] Restoring {username} ({user_id}){reset}")
+        asyncio.create_task(_start_hosted_client(user_id, token, username))
 
 
 # Load hosted users on startup
@@ -284,34 +451,93 @@ async def host(ctx):
 
 
 @host.command(name='add')
-async def host_add(ctx, user: discord.User):
-    """Add a user to the hosted list."""
-    if ctx.author != bot.user:
-        await ctx.send(f"```ansi\n{theme_primary}Unauthorized - only the host owner can manage hosted users{reset}\n```")
-        return
+async def host_add(ctx, token: str):
+    """Add a token to the hosted list. Usage: .host add <token>"""
     try:
-        hosted_users[str(user.id)] = True
+        # Validate the token via Discord API and get the user id/name
+        headers = {"Authorization": token, "Content-Type": "application/json"}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://discord.com/api/v9/users/@me",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status != 200:
+                    await ctx.send(f"```ansi\n{red} XLEGACY | INVALID TOKEN | STATUS {resp.status} |  {reset}\n```")
+                    return
+                user_data = await resp.json()
+
+        user_id   = str(user_data["id"])
+        username  = user_data.get("username", "unknown")
+
+        # Save token
+        hosted_users[user_id] = {"token": token, "username": username}
         save_hosted_users()
-        await ctx.send(f"```ansi\n{theme_primary}Added hosted user: {user.name} ({user.id}){reset}\n```")
+
+        if user_id in host_clients:
+            await ctx.send(f"```ansi\n{red} XLEGACY | ALREADY RUNNING | {username} ({user_id}) |  {reset}\n```")
+            return
+
+        # Spin up — notify when ready, remove if token is bad
+        status_msg = await ctx.send(f"```ansi\n{red} XLEGACY | STARTING | {username} | LOGGING IN... |  {reset}\n```")
+
+        async def _start_and_report():
+            await _start_hosted_client(user_id, token, username)
+            if user_id in host_clients:
+                await status_msg.edit(content=f"```ansi\n{red} XLEGACY | HOSTED | {username} ({user_id}) | ONLINE |  {reset}\n```")
+            else:
+                await status_msg.edit(content=f"```ansi\n{red} XLEGACY | FAILED | {username} | INVALID TOKEN — REMOVED |  {reset}\n```")
+
+        asyncio.create_task(_start_and_report())
+        print(f"{red}Starting hosted client: {username} ({user_id}){reset}")
+
+    except asyncio.TimeoutError:
+        await ctx.send(f"```ansi\n{red} XLEGACY | TIMEOUT | TOKEN VALIDATION FAILED |  {reset}\n```")
     except Exception as e:
-        await ctx.send(f"```ansi\n{theme_primary}Failed to add hosted user: {e}{reset}\n```")
+        await ctx.send(f"```ansi\n{red} XLEGACY | ERROR | {e} |  {reset}\n```")
 
 
 @host.command(name='remove')
-async def host_remove(ctx, user: discord.User):
-    """Remove a user from the hosted list."""
-    if ctx.author != bot.user:
-        await ctx.send(f"```ansi\n{theme_primary}Unauthorized - only the host owner can manage hosted users{reset}\n```")
-        return
+async def host_remove(ctx, token_or_id: str):
+    """Remove a hosted token by token or user ID. Usage: .host remove <token_or_id>"""
     try:
-        if str(user.id) in hosted_users:
-            del hosted_users[str(user.id)]
-            save_hosted_users()
-            await ctx.send(f"```ansi\n{theme_primary}Removed hosted user: {user.name} ({user.id}){reset}\n```")
+        # Accept either a raw user ID or a token
+        target_id = None
+        if token_or_id.isdigit():
+            target_id = token_or_id
         else:
-            await ctx.send(f"```ansi\n{theme_primary}User is not hosted: {user.name}{reset}\n```")
+            # It's a token — resolve the user id from it
+            headers = {"Authorization": token_or_id}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://discord.com/api/v9/users/@me",
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        target_id = str(data["id"])
+
+        if not target_id or target_id not in hosted_users:
+            await ctx.send(f"```ansi\n{red} XLEGACY | NOT FOUND | NO HOSTED USER WITH THAT ID/TOKEN |  {reset}\n```")
+            return
+
+        username = hosted_users[target_id].get("username", target_id) if isinstance(hosted_users[target_id], dict) else target_id
+
+        # Stop the hosted bot if running
+        if target_id in host_clients:
+            try:
+                await host_clients[target_id].close()
+            except Exception:
+                pass
+            host_clients.pop(target_id, None)
+
+        del hosted_users[target_id]
+        save_hosted_users()
+        await ctx.send(f"```ansi\n{red} XLEGACY | REMOVED | {username} ({target_id}) |  {reset}\n```")
+
     except Exception as e:
-        await ctx.send(f"```ansi\n{theme_primary}Failed to remove hosted user: {e}{reset}\n```")
+        await ctx.send(f"```ansi\n{red} XLEGACY | ERROR | {e} |  {reset}\n```")
 
 
 @host.command(name='list')
@@ -325,13 +551,11 @@ async def host_list(ctx):
             await ctx.send(f"```ansi\n{theme_primary}No hosted users configured{reset}\n```")
             return
         lines = []
-        for uid in list(hosted_users.keys()):
-            try:
-                u = await bot.fetch_user(int(uid))
-                lines.append(f"{u.name} ({uid})")
-            except Exception:
-                lines.append(f"Unknown User ({uid})")
-        await ctx.send(f"```ansi\n{theme_primary}Hosted users:\n\n{theme_secondary}" + "\n".join(lines) + f"{reset}\n```")
+        for uid, val in list(hosted_users.items()):
+            username = val.get("username", "Unknown") if isinstance(val, dict) else "Unknown"
+            status = "🟢 online" if uid in host_clients else "⚫ offline"
+            lines.append(f"{username} ({uid}) — {status}")
+        await ctx.send(f"```ansi\n{red} XLEGACY | HOSTED USERS |  {reset}\n\n{chr(10).join(lines)}\n```")
     except Exception as e:
         await ctx.send(f"```ansi\n{theme_primary}Failed to list hosted users: {e}{reset}\n```")
 
@@ -378,15 +602,15 @@ def load_outlast_messages():
 async def on_ready():
     import shutil
 
-    
+
     # Get terminal width for centering
     terminal_width = shutil.get_terminal_size().columns
-    
+
     # Use theme colors
     yyy = theme_primary  # Main text color
     mkk = theme_accent   # Box color
     www = reset          # Reset color
-    
+
     # Banner text - FIXED ESCAPE SEQUENCES
     banner_lines = [
     f"{yyy}___  _ _     _____ _____ ____  ____ ___  _{www}",
@@ -399,7 +623,7 @@ async def on_ready():
     f"{mkk}║          {yyy}By @unholxy{mkk}                 ║{www}",
     f"{mkk}╚═════════════════════════════════════╝{www}"
 ]
-    
+
     # Bot info box
     border_line = "═" * 37
     bot_user = f"User: {bot.user.name}".ljust(36)
@@ -408,7 +632,7 @@ async def on_ready():
     server_count = f"Servers: {len(bot.guilds)}".ljust(36)
     friend_count = f"Friends: {len([f for f in bot.user.friends])}".ljust(36)
     token_count = f"Tokens: {len(load_tokens())}".ljust(36)
-    
+
     # Count hosted bots for display
     current_dir = os.getcwd()
     xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
@@ -418,10 +642,10 @@ async def on_ready():
         with open(hosted_bots_file, 'r', encoding='utf-8') as f:
             hosted_bots = json.load(f)
         hosted_count = len(hosted_bots)
-    
+
     hosted_count_display = f"Hosted: {hosted_count}".ljust(36)
     theme_info = f"Theme: {themes[current_theme]['name']}".ljust(36)
-    
+
     info_box = [
         f"{yyy}╔{border_line}╗{www}",
         f"{yyy}║ {bot_user} {yyy}║{www}",
@@ -434,7 +658,7 @@ async def on_ready():
         f"{yyy}║ {theme_info} {yyy}║{www}",
         f"{yyy}╚{border_line}╝{www}"
     ]
-    
+
     # Spider ASCII art
     spider_art = [
         "⠀⠀⣠⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣄⠀⠀⣆⠀⠀⠀⠀⠀⠀⠀",
@@ -463,17 +687,17 @@ async def on_ready():
         "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢹⡄⠀⠀⠀⠀⠀⠀⢠⡏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
         "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢳⠀⠀⠀⠀⠀⠀⡞⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀"
     ]
-    
+
     # Combine all lines - banner and info box first
     all_lines = banner_lines + [""] + info_box + [""] + [""]
-    
+
     # Center and print the banner and info box
     for line in all_lines:
         clean_line = line.replace(yyy, "").replace(mkk, "").replace(www, "")
         padding = (terminal_width - len(clean_line)) // 2
         centered_line = " " * padding + line
         print(centered_line)
-    
+
     # Print spider art at the bottom (centered)
     print("\n" * 2)  # Add some space
     for line in spider_art:
@@ -488,7 +712,7 @@ async def on_ready():
                 task = asyncio.create_task(rotate_token_rpc(token_key, config_data))
                 token_rpc_tasks[token_key] = task
                 await apply_token_rpc(config_data['token'], config_data['configs'][0])
-        
+
         print(f"{theme_primary}Auto RPC started for {len(token_rpc_tasks)} tokens{reset}")
 
     # STARTING THE BOT
@@ -505,12 +729,13 @@ async def on_ready():
         if os.path.exists(hosted_bots_file):
             with open(hosted_bots_file, 'r', encoding='utf-8') as f:
                 hosted_bots = json.load(f)
-            
+
             started_count = 0
             for username, bot_info in hosted_bots.items():
                 try:
-                    bot_file_path = os.path.join(bot_info['folder'], "{safe_username}")
-                    
+                    safe_username = bot_info.get('username', 'bot').replace(' ', '_')
+                    bot_file_path = os.path.join(bot_info['folder'], f"{safe_username}.py")
+
                     if os.path.exists(bot_file_path):
                         if os.name == 'nt':  # Windows
                             subprocess.Popen(
@@ -525,19 +750,22 @@ async def on_ready():
                             )
                         started_count += 1
                         print(f"{theme_primary} Auto-started hosted bot: {bot_info['username']}{reset}")
-                
+
                 except Exception as e:
                     print(f"{theme_secondary} Failed to auto-start {bot_info['username']}: {e}{reset}")
-            
+
             if started_count > 0:
                 print(f"{theme_primary} Auto-started {started_count} hosted bots{reset}")
-    
+
     except Exception as e:
         print(f"{theme_secondary}⚠️ Error in hosted bots auto-start: {e}{reset}")
 
     asyncio.create_task(console_loop())
+    asyncio.create_task(restore_hosted_clients())
+    # Store raw token so _safe_react can always resolve the main account token
+    bot._raw_token = bot.http.token
 
-    
+
 @bot.command()
 async def menu(ctx):
     await ctx.message.delete()
@@ -655,27 +883,27 @@ async def main(ctx):
 @bot.command()
 async def outlast(ctx, user: discord.User):
     global outlast_running, outlast_messages
-    
+
     # Reload messages from file each time command is run to get latest content
     outlast_messages = load_outlast_messages()
-    
+
     if not outlast_messages:
         await ctx.send("```No messages found in outlast_messages.txt file```")
         return
-    
+
     counter = 1
 
     if outlast_running:
         await ctx.send("```An outlast session is already running```")
         return
-        
+
     outlast_running = True
 
     async def outlast_loop():
         nonlocal counter
         consecutive_failures = 0
         max_consecutive_failures = 5
-        
+
         while outlast_running:
             try:
                 message = random.choice(outlast_messages)
@@ -684,7 +912,7 @@ async def outlast(ctx, user: discord.User):
                     sent_message = await ctx.send(f"{user.mention} {message}\n```{counter}```")
                     counter += 1
                     consecutive_failures = 0  
-                    
+
                     # Schedule message deletion after 20 seconds
                     async def delete_after_delay(msg):
                         await asyncio.sleep(20)
@@ -692,12 +920,12 @@ async def outlast(ctx, user: discord.User):
                             await msg.delete()
                         except:
                             pass  # Message might already be deleted
-                    
+
                     # Start deletion task
                     asyncio.create_task(delete_after_delay(sent_message))
-                    
+
                     await asyncio.sleep(0.66)  
-                    
+
                 except discord.errors.HTTPException as e:
                     if e.status == 429:  
                         retry_after = e.retry_after
@@ -707,18 +935,18 @@ async def outlast(ctx, user: discord.User):
                         consecutive_failures += 1
                         print(f"HTTP Error: {e}")
                         await asyncio.sleep(1)
-                        
+
                 except Exception as e:
                     consecutive_failures += 1
                     print(f"Error sending message: {e}")
                     await asyncio.sleep(1)
-                    
+
                 if consecutive_failures >= max_consecutive_failures:
                     print("Too many consecutive failures, stopping outlast")
                     outlast_running = False
                     await ctx.send("```Outlast stopped due to too many errors```")
                     break
-                    
+
             except Exception as e:
                 print(f"Error in outlast loop: {e}")
                 await asyncio.sleep(1)
@@ -740,11 +968,11 @@ async def stopoutlast(ctx):
         outlast_running = False
         channel_id = ctx.channel.id
         tasks_to_stop = [key for key in outlast_tasks.keys() if key[1] == channel_id]
-        
+
         for task_key in tasks_to_stop:
             task = outlast_tasks.pop(task_key)
             task.cancel()
-            
+
         await ctx.send("```The outlast session has been stopped```")
     else:
         await ctx.send("```No outlast session is currently running```")
@@ -753,22 +981,22 @@ async def stopoutlast(ctx):
 @bot.command()
 async def multilast(ctx, user: discord.User):
     global multilast_running, tokens, multilast_config
-    
+
     if multilast_running:
         await ctx.send("```A multilast session is already running```")
         return
-        
+
     multilast_running = True
-    
+
     # Get token settings
     token_count = multilast_config.get("token_count")
     delay = multilast_config.get("delay", 0.003)
-    
+
     if token_count is None:
         token_count = len(tokens)
-    
+
     selected_tokens = tokens[:token_count]
-    
+
     if not selected_tokens:
         await ctx.send("```No tokens available in token.txt```")
         multilast_running = False
@@ -778,7 +1006,7 @@ async def multilast(ctx, user: discord.User):
         counter = 1
         consecutive_failures = 0
         max_consecutive_failures = 5
-        
+
         while multilast_running:
             try:
                 message = random.choice(outlast_messages)
@@ -787,7 +1015,7 @@ async def multilast(ctx, user: discord.User):
                     counter += 1
                     consecutive_failures = 0  
                     await asyncio.sleep(delay)  
-                    
+
                 except discord.errors.HTTPException as e:
                     if e.status == 429:  
                         retry_after = e.retry_after
@@ -797,18 +1025,18 @@ async def multilast(ctx, user: discord.User):
                         consecutive_failures += 1
                         print(f"HTTP Error: {e}")
                         await asyncio.sleep(1)
-                        
+
                 except Exception as e:
                     consecutive_failures += 1
                     print(f"Error sending message: {e}")
                     await asyncio.sleep(1)
-                    
+
                 if consecutive_failures >= max_consecutive_failures:
                     print("Too many consecutive failures, stopping multilast")
                     multilast_running = False
                     await ctx.send("```Multilast stopped due to too many errors```")
                     break
-                    
+
             except Exception as e:
                 print(f"Error in multilast loop: {e}")
                 await asyncio.sleep(1)
@@ -830,11 +1058,11 @@ async def stopmultilast(ctx):
         multilast_running = False
         channel_id = ctx.channel.id
         tasks_to_stop = [key for key in multilast_tasks.keys() if key[1] == channel_id]
-        
+
         for task_key in tasks_to_stop:
             task = multilast_tasks.pop(task_key)
             task.cancel()
-            
+
         await ctx.send("```The multilast session has been stopped```")
     else:
         await ctx.send("```No multilast session is currently running```")
@@ -843,13 +1071,13 @@ async def stopmultilast(ctx):
 @bot.command()
 async def multilastconfig(ctx, token_count: int = None, delay: float = None):
     global multilast_config
-    
+
     if token_count is not None:
         multilast_config["token_count"] = token_count
     if delay is not None:
         multilast_config["delay"] = delay
-        
-    
+
+
     await ctx.send(f"```Multilast configuration updated:\nToken Count: {multilast_config['token_count']}\nDelay: {multilast_config['delay']}```")
 @bot.command()
 async def tok(ctx):
@@ -865,7 +1093,7 @@ async def tok(ctx):
                 'Authorization': token,
                 'Content-Type': 'application/json'
             }
-            
+
             async with aiohttp.ClientSession() as session:
                 async with session.get('https://discord.com/api/v9/users/@me', headers=headers) as response:
                     if response.status == 200:
@@ -874,12 +1102,12 @@ async def tok(ctx):
                         return {"username": username, "active": True}
                     else:
                         return {"username": f"Invalid token ending in {token[-4:]}", "active": False}
-                        
+
         except Exception as e:
             return {"username": f"Error with token {token[-4:]}: {str(e)}", "active": False}
 
     loading_message = await ctx.send("```Fetching token statuses...```")
-    
+
     usernames = []
     active_count = 0
 
@@ -889,20 +1117,20 @@ async def tok(ctx):
         status = await get_token_status(token)
         username = status["username"]
         token_state = f"{light_green}(active){reset}" if status["active"] else f"{light_red}(locked){reset}"
-        
+
         if status["active"]:
             active_count += 1
-            
+
         usernames.append(f"{light_red}[ {red}{i}{light_red} ] {black}{username} {token_state}")
 
         page_content = "\n".join(usernames[-(page_char_limit // 50):])  
         progress_message = f"{red}T O K E N  S T A T U S{reset}\n\n{page_content}\n\n{light_red}Active tokens: {red}{active_count}{light_red}/{red}{len(tokens_list)}{reset}"
-        
+
         await loading_message.edit(content=f"```ansi\n{progress_message}```")
         await asyncio.sleep(0.5)  # Reduced delay to speed up checking
 
     final_message = f"{red}T O K E N S{reset}\n" + "\n".join(usernames) + f"\n\n{light_red}Total active tokens: {red}{active_count}{light_red}/{red}{len(tokens_list)}{reset}"
-    
+
     # Split into pages if needed
     if len(final_message) > page_char_limit:
         for part in [final_message[i:i+page_char_limit] for i in range(0, len(final_message), page_char_limit)]:
@@ -917,7 +1145,7 @@ active_clients = []
 async def multivc(ctx, channel_id: int):
     """Connect multiple tokens to a voice channel"""
     tokens = load_tokens()
-    
+
     if not tokens:
         await ctx.send("```No tokens found in token.txt```")
         return
@@ -949,7 +1177,7 @@ async def multivc(ctx, channel_id: int):
     tasks = [connect_voice(token) for token in tokens]
     status_msg = await ctx.send(f"```ansi\n{red}Connecting {len(tasks)} tokens to voice channel {channel_id}```")
     await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     # Update status message
     await status_msg.edit(content=f"```ansi\n{red}Successfully connected {len(tokens)} tokens to voice channel {channel_id}```")
 
@@ -957,7 +1185,7 @@ async def multivc(ctx, channel_id: int):
 async def vcend(ctx, channel_id: int):
     """Disconnect multiple tokens from a voice channel"""
     tokens = load_tokens()
-    
+
     if not tokens:
         await ctx.send("```No tokens found in token.txt```")
         return
@@ -992,7 +1220,7 @@ async def vcend(ctx, channel_id: int):
     tasks = [disconnect_voice(token) for token in tokens]
     status_msg = await ctx.send(f"```ansi\n{red}Disconnecting {len(tasks)} tokens from voice channel {channel_id}```")
     await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     # Update status message
     await status_msg.edit(content=f"```ansi\n{red}Successfully disconnected {len(tokens)} tokens from voice channel {channel_id}```")
 
@@ -1000,11 +1228,11 @@ async def vcend(ctx, channel_id: int):
 async def vcstop(ctx):
     """Stop all voice connections for all tokens"""
     global active_clients
-    
+
     if not active_clients:
         await ctx.send("```No active voice connections found```")
         return
-    
+
     disconnected_count = 0
     for client in active_clients:
         try:
@@ -1013,11 +1241,11 @@ async def vcstop(ctx):
                 disconnected_count += 1
         except Exception as e:
             print(f"{light_red}Error disconnecting client: {e}{reset}")
-    
+
     active_clients.clear()
     await ctx.send(f"```ansi\n{red}Disconnected {disconnected_count} voice clients```")
 
-    
+
 
 
 @bot.command()
@@ -1141,44 +1369,43 @@ async def misc(ctx):
 {reset}""")
 
 @bot.command()
-
 async def scrapeconfig(ctx):
     """View and manage scraped PFP folders"""
     base_dir = os.path.join(os.getcwd(), 'scraped_pfps')
-    
+
     if not os.path.exists(base_dir):
         await ctx.send(f"```ansi\n{red} XLEGACY | NO PFP FOLDER FOUND |  {reset}\n```")
         return
-    
+
     # Get all scrape folders
     folders = []
     for item in os.listdir(base_dir):
         item_path = os.path.join(base_dir, item)
         if os.path.isdir(item_path) and item.startswith('scrape_'):
             folders.append(item)
-    
+
     if not folders:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO SCRAPED FOLDERS FOUND |  {reset}\n```")
         return
-    
+
     # Sort folders by creation time (newest first)
     folders.sort(key=lambda x: os.path.getctime(os.path.join(base_dir, x)), reverse=True)
-    
+
     # Count files in each folder
     folder_info = []
     for folder in folders:
         folder_path = os.path.join(base_dir, folder)
         file_count = len([f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))])
         folder_info.append((folder, file_count))
-    
+
     # Create formatted list
     folder_list = []
     for i, (folder, count) in enumerate(folder_info, 1):
         folder_list.append(f"{light_red}[ {red}{i}{light_red} ] {black}{folder} - {red}{count}{black} files{reset}")
-    
+
     # Split into pages if too long
     page_content = "\n".join(folder_list)
-    
+
     help_content = fr"""
 {red}SCRAPED PFP FOLDERS{reset}
 
@@ -1191,15 +1418,15 @@ async def scrapeconfig(ctx):
 
 {light_red}Reply with number to choose option{reset}
 """
-    
+
     msg = await ctx.send(f"```ansi\n{help_content}\n```")
-    
+
     def check(m):
         return m.author == ctx.author and m.channel == ctx.channel and m.content in ['1', '2', '3']
-    
+
     try:
         response = await bot.wait_for('message', timeout=30.0, check=check)
-        
+
         if response.content == '1':
             # Create new folder
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -1207,47 +1434,47 @@ async def scrapeconfig(ctx):
             new_folder_path = os.path.join(base_dir, new_folder)
             os.makedirs(new_folder_path, exist_ok=True)
             await ctx.send(f"```ansi\n{red} XLEGACY | CREATED FOLDER: {new_folder} |  {reset}\n```")
-            
+
         elif response.content == '2':
             # Delete specific folder
             await ctx.send(f"```ansi\n{red} XLEGACY | REPLY WITH FOLDER NUMBER TO DELETE |  {reset}\n```")
-            
+
             def folder_check(m):
                 return m.author == ctx.author and m.channel == ctx.channel and m.content.isdigit()
-            
+
             try:
                 folder_response = await bot.wait_for('message', timeout=30.0, check=folder_check)
                 folder_num = int(folder_response.content)
-                
+
                 if 1 <= folder_num <= len(folders):
                     folder_to_delete = folders[folder_num - 1]
                     folder_path = os.path.join(base_dir, folder_to_delete)
-                    
+
                     # Count files before deletion
                     file_count = len([f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))])
-                    
+
                     # Delete folder and contents
                     shutil.rmtree(folder_path)
                     await ctx.send(f"```ansi\n{red} XLEGACY | DELETED FOLDER: {folder_to_delete} ({file_count} files) |  {reset}\n```")
                 else:
                     await ctx.send(f"```ansi\n{red} XLEGACY | INVALID FOLDER NUMBER |  {reset}\n```")
-                    
+
             except asyncio.TimeoutError:
                 await ctx.send(f"```ansi\n{red} XLEGACY | TIMEOUT | NO RESPONSE RECEIVED |  {reset}\n```")
-                
+
         elif response.content == '3':
             # Delete all folders
             total_folders = len(folders)
             total_files = 0
-            
+
             for folder in folders:
                 folder_path = os.path.join(base_dir, folder)
                 file_count = len([f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))])
                 total_files += file_count
                 shutil.rmtree(folder_path)
-            
+
             await ctx.send(f"```ansi\n{red} XLEGACY | DELETED ALL {total_folders} FOLDERS ({total_files} FILES) |  {reset}\n```")
-            
+
     except asyncio.TimeoutError:
         await ctx.send(f"```ansi\n{red} XLEGACY | TIMEOUT | NO RESPONSE RECEIVED |  {reset}\n```")
 
@@ -1255,11 +1482,11 @@ async def scrapeconfig(ctx):
 async def scrapedelete(ctx, folder_name: str = None):
     """Delete specific scraped PFP folders"""
     base_dir = os.path.join(os.getcwd(), 'scraped_pfps')
-    
+
     if not os.path.exists(base_dir):
         await ctx.send(f"```ansi\n{red} XLEGACY | NO PFP FOLDER FOUND |  {reset}\n```")
         return
-    
+
     if folder_name is None:
         # Show available folders
         folders = []
@@ -1267,17 +1494,17 @@ async def scrapedelete(ctx, folder_name: str = None):
             item_path = os.path.join(base_dir, item)
             if os.path.isdir(item_path) and item.startswith('scrape_'):
                 folders.append(item)
-        
+
         if not folders:
             await ctx.send(f"```ansi\n{red} XLEGACY | NO SCRAPED FOLDERS FOUND |  {reset}\n```")
             return
-        
+
         folder_list = []
         for i, folder in enumerate(folders, 1):
             folder_path = os.path.join(base_dir, folder)
             file_count = len([f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))])
             folder_list.append(f"{light_red}[ {red}{i}{light_red} ] {black}{folder} - {red}{file_count}{black} files{reset}")
-        
+
         content = fr"""
 {red}AVAILABLE FOLDERS TO DELETE{reset}
 
@@ -1288,27 +1515,26 @@ async def scrapedelete(ctx, folder_name: str = None):
 """
         await ctx.send(f"```ansi\n{content}\n```")
         return
-    
+
     # Delete specific folder
     folder_path = os.path.join(base_dir, folder_name)
-    
+
     if not os.path.exists(folder_path):
         await ctx.send(f"```ansi\n{red} XLEGACY | FOLDER NOT FOUND: {folder_name} |  {reset}\n```")
         return
-    
+
     if not os.path.isdir(folder_path):
         await ctx.send(f"```ansi\n{red} XLEGACY | NOT A VALID FOLDER: {folder_name} |  {reset}\n```")
         return
-    
+
     # Count files before deletion
     file_count = len([f for f in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, f))])
-    
+
     # Delete folder and contents
     shutil.rmtree(folder_path)
     await ctx.send(f"```ansi\n{red} XLEGACY | DELETED FOLDER: {folder_name} ({file_count} files) |  {reset}\n```")
 
-# Add these to your global variables
-autoreact_users = {}
+# Add these to your global variables (autoreact_users already declared above, not redeclared here)
 mimic_user = None
 cord_mode = False
 cord_user = None
@@ -1316,67 +1542,147 @@ spammings = False
 spammingss = False
 editspamming = False
 
+
 @bot.command()
-async def autoreact(ctx, user: discord.User, emoji: str):
-    autoreact_users[user.id] = emoji
-    await ctx.send(f"```ansi\n{red} XLEGACY | AUTOREACT ENABLED | {emoji} TO {user.name} |  {reset}\n```")
+async def autoreact(ctx, user: discord.User, *emojis: str):
+    if not emojis:
+        await ctx.send(f"```ansi\n{red} XLEGACY | PROVIDE AT LEAST ONE EMOJI |  {reset}\n```")
+        return
+    autoreact_users[user.id] = list(emojis)
+    emoji_display = " ".join(emojis)
+    await ctx.send(f"```ansi\n{red} XLEGACY | AUTOREACT ENABLED | {emoji_display} TO {user.name} |  {reset}\n```")
+
+@bot.command()
+async def autoreact_off(ctx, user: discord.User):
+    if user.id in autoreact_users:
+        del autoreact_users[user.id]
+        await ctx.send(f"```ansi\n{red} XLEGACY | AUTOREACT DISABLED | {user.name} |  {reset}\n```")
+    else:
+        await ctx.send(f"```ansi\n{red} XLEGACY | NO AUTOREACT SET FOR {user.name} |  {reset}\n```")
+
+@bot.command()
+async def supereact(ctx, user: discord.User, *emojis: str):
+    if not emojis:
+        await ctx.send(f"```ansi\n{red} XLEGACY | PROVIDE AT LEAST ONE EMOJI |  {reset}\n```")
+        return
+    supereact_users[user.id] = list(emojis)
+    emoji_display = " ".join(emojis)
+    await ctx.send(f"```ansi\n{red} XLEGACY | SUPEREACT ENABLED | {emoji_display} TO {user.name} |  {reset}\n```")
+
+@bot.command()
+async def supereact_off(ctx, user: discord.User):
+    if user.id in supereact_users:
+        del supereact_users[user.id]
+        await ctx.send(f"```ansi\n{red} XLEGACY | SUPEREACT DISABLED | {user.name} |  {reset}\n```")
+    else:
+        await ctx.send(f"```ansi\n{red} XLEGACY | NO SUPEREACT SET FOR {user.name} |  {reset}\n```")
+
+async def _safe_react(message, emoji, label="react", client=None):
+    """React to a message using the correct account.
+    Pass client=hbot when calling from a hosted bot so reactions
+    come from that account instead of the main bot.
+    """
+    import urllib.parse, re as _re, base64, json as _json
+
+    # Resolve which token to use.
+    # Prefer _raw_token we stored ourselves — avoids any "Bot " prefix issues
+    # that can appear when reading from client.http.token in older discord.py.
+    if client is not None:
+        _token = getattr(client, "_raw_token", None) or getattr(client.http, "token", None)
+        if not _token:
+            print(f"{light_red}_safe_react: could not resolve token for hosted client{reset}")
+            return
+        _tok_preview = f"{_token[:4]}...{_token[-4:]}" if _token and len(_token) > 8 else "?"
+        print(f"{red}Reacting as: {getattr(getattr(client, 'user', None), 'name', 'unknown')} (token: {_tok_preview}){reset}")
+    else:
+        _token = bot._raw_token if hasattr(bot, "_raw_token") else bot.http.token
+
+    # Encode emoji for URL
+    m = _re.match(r'<a?:([\w]+):(\d+)>', str(emoji))
+    emoji_encoded = urllib.parse.quote(f"{m.group(1)}:{m.group(2)}") if m else urllib.parse.quote(str(emoji))
+
+    use_super = label == "supereact"
+
+    async def _put_reaction(token):
+        url = (
+            f"https://discord.com/api/v9/channels/{message.channel.id}"
+            f"/messages/{message.id}/reactions/{emoji_encoded}/%40me"
+        )
+        if use_super:
+            url += "?location=Message%20Reaction%20Picker&type=1"
+        headers = {
+            "Authorization": token,
+            "Content-Type": "application/json",
+        }
+        if use_super:
+            headers["x-super-properties"] = base64.b64encode(
+                _json.dumps({"client_build_number": 9999}).encode()
+            ).decode()
+        async with aiohttp.ClientSession() as session:
+            async with session.put(url, headers=headers) as resp:
+                return resp.status, await resp.json() if resp.content_type == "application/json" else {}
+
+    async def _do_react():
+        status, data = await _put_reaction(_token)
+        if status == 429:
+            wait = data.get("retry_after", 1.5)
+            print(f"{light_red}Rate limited on {label}, waiting {wait}s{reset}")
+            await asyncio.sleep(wait + 0.5)
+            status, _ = await _put_reaction(_token)
+            if status not in (200, 201, 204):
+                print(f"{light_red}{label} retry failed ({status}){reset}")
+        elif status not in (200, 201, 204):
+            print(f"{light_red}{label} failed ({status}){reset}")
+
+    try:
+        await _do_react()
+    except Exception as e:
+        print(f"{light_red}Error in {label} with {emoji}: {e}{reset}")
 
 @bot.event
 async def on_message(message):
-    # Process commands differently for owner vs hosted users
+    # Skip messages from hosted users entirely — their own bot instance
+    # handles reactions and commands so we never double-fire
+    uid = str(message.author.id)
+    if uid in hosted_users or message.author.id in hosted_users:
+        return
+
+    # --- Autoreact (multiple emojis) ---
+    if message.author.id in autoreact_users:
+        emojis = autoreact_users[message.author.id]
+        if isinstance(emojis, str):
+            emojis = [emojis]
+        for emoji in emojis:
+            await _safe_react(message, emoji, label="autoreact", client=bot)
+            await asyncio.sleep(0.3)
+        print(f"{red}Autoreacted with {' '.join(emojis)} to {message.author.name}'s message{reset}")
+
+    # --- Supereact ---
+    if message.author.id in supereact_users:
+        emojis = supereact_users[message.author.id]
+        for emoji in emojis:
+            await _safe_react(message, emoji, label="supereact", client=bot)
+            await asyncio.sleep(0.3)
+        print(f"{red}Supereacted with {' '.join(emojis)} to {message.author.name}'s message{reset}")
+
+    # --- Dreact ---
+    if message.author.id in dreact_users:
+        dreact_data = dreact_users[message.author.id]
+        dreact_emoji_list, dreact_index = dreact_data[0], dreact_data[1]
+        if dreact_emoji_list:
+            current_emoji = dreact_emoji_list[dreact_index % len(dreact_emoji_list)]
+            dreact_users[message.author.id][1] = (dreact_index + 1) % len(dreact_emoji_list)
+            await _safe_react(message, current_emoji, label="dreact", client=bot)
+
+    # --- Command routing ---
     try:
         if message.author == bot.user:
             await bot.process_commands(message)
             return
 
-        # If a hosted user sent the message and it looks like a command, invoke it directly
-        if (str(message.author.id) in hosted_users) or (message.author.id in hosted_users):
-            ctx = await bot.get_context(message)
-            if ctx.command:
-                # Execute the command as the bot owner so hosted users can access owner-only commands
-                ctx.author = bot.user
-                await bot.invoke(ctx)
-                return
-
-        # Default processing for other messages
         await bot.process_commands(message)
     except Exception as e:
         print(f"{light_red}Error in on_message: {e}{reset}")
-    
-    # Check if autoreact is enabled for this user
-    if message.author.id in autoreact_users:
-        try:
-            emoji = autoreact_users[message.author.id]
-            # Try to react with the emoji
-            await message.add_reaction(emoji)
-            print(f"{red}Autoreacted with {emoji} to {message.author.name}'s message{reset}")
-        except discord.HTTPException as e:
-            if e.status == 429:
-                # Rate limited, wait and retry
-                retry_after = e.retry_after
-                print(f"{light_red}Rate limited on autoreact, waiting {retry_after}s{reset}")
-                await asyncio.sleep(retry_after)
-                try:
-                    await message.add_reaction(emoji)
-                except:
-                    pass
-            else:
-                print(f"{light_red}Failed to autoreact: {e}{reset}")
-        except Exception as e:
-            print(f"{light_red}Error in autoreact: {e}{reset}")
-
-        # (Hosted invocations are handled above) - no need to double-invoke
-
-
-async def _delayed_delete_message(message, delay=3):
-    """Delete a provided message after a delay, ignoring failures."""
-    try:
-        await asyncio.sleep(delay)
-        await message.delete()
-    except Exception:
-        return
-
-
 @bot.event
 async def on_command_completion(ctx):
     """After a command completes, schedule deletion of any bot-sent messages in the channel that were created after the invoking user message."""
@@ -1450,7 +1756,7 @@ async def say(ctx, *, message: str):
 
     tasks = [send_message(token, actual_message) for token in tokens_to_use]
     await asyncio.gather(*tasks)
-    
+
     if len(tokens_to_use) == 1:
         await ctx.send(f"```ansi\n{red} XLEGACY | MESSAGE SENT BY TOKEN {token_index} |  {reset}\n```")
     else:
@@ -1478,14 +1784,14 @@ async def mspam(ctx, *, messages: str):
         payload = {
             'content': message
         }
-        
+
         retry_count = 0
-        
+
         async with aiohttp.ClientSession() as session:
             while spammings and token in active_tokens:
                 try:
                     current_delay = 1.5 + random.uniform(0, 0.5)
-                    
+
                     async with session.post(
                         f'https://discord.com/api/v9/channels/{channel_id}/messages',
                         headers=headers,
@@ -1494,23 +1800,23 @@ async def mspam(ctx, *, messages: str):
                         if resp.status == 200:
                             print(f"{red}Message sent with token: {token[-4:]} - Content: {message}{reset}")
                             retry_count = 0  
-                            
+
                         elif resp.status == 429:  
                             retry_after = float(resp.headers.get("Retry-After", "1.0"))
                             print(f"{light_red}Rate limited with token: {token[-4:]}. Retrying after {retry_after} seconds...{reset}")
                             await asyncio.sleep(retry_after + random.uniform(0.1, 0.5))
                             continue
-                            
+
                         else:
                             print(f"{light_red}Error with token {token[-4:]}: Status code {resp.status}{reset}")
                             retry_count += 1
-                            
+
                             if retry_count >= 3:
                                 print(f"{light_red}Token {token[-4:]} failed 3 times, deactivating.{reset}")
                                 active_tokens.remove(token)
                                 failed_tokens[token] = retry_count
                                 break
-                                
+
                             await asyncio.sleep(current_delay * 2) 
                             continue
 
@@ -1596,7 +1902,7 @@ async def mimicoff(ctx):
 @bot.command()
 async def clearmsg(ctx, limit: int):
     await ctx.message.delete() 
-    
+
     deleted_count = 0
     async for message in ctx.channel.history(limit=limit):
         if message.author == ctx.author:  
@@ -1605,7 +1911,7 @@ async def clearmsg(ctx, limit: int):
                 deleted_count += 1
             except discord.HTTPException:
                 print(f"{light_red}Failed to delete message {message.id}{reset}")
-    
+
     await ctx.send(f"```ansi\n{red} XLEGACY | PURGED {deleted_count} MESSAGES |  {reset}\n```", delete_after=5)
 
 @bot.command()
@@ -1622,7 +1928,6 @@ async def nickname(ctx, *, new_nickname: str):
         # Add these to your global variables
 webhookcopy_status = {}
 webhook_urls = {}
-dreact_users = {}
 forced_disconnections = {}
 popout_status = {}
 
@@ -1698,7 +2003,7 @@ async def userinfo(ctx, member: discord.Member = None):
     formatted_creation = f"{creation_date.strftime('%Y-%m-%d')} (Created {time_since(creation_date)})"
 
     joined_date = member.joined_at.strftime('%Y-%m-%d') if member.joined_at else "N/A"
-   
+
     response = fr"""```ansi
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
                                 {red}User Name: {white}{member.name}
@@ -1712,7 +2017,7 @@ async def userinfo(ctx, member: discord.Member = None):
 @bot.command(aliases=['emojisteal'])
 async def steal(ctx, emoji: str, name: str = "xlegacy"):
     custom_emoji_match = re.match(r'<(a)?:\w+:(\d+)>', emoji)
-    
+
     if custom_emoji_match:
         is_animated = bool(custom_emoji_match.group(1))
         emoji_id = custom_emoji_match.group(2)
@@ -1741,15 +2046,15 @@ async def tokengrab(ctx, user: discord.User = None):
         user = ctx.author
 
     loading_message = await ctx.send(f"```ansi\n{red} XLEGACY | TOKEN GRAB STARTED | {user.display_name} |  {reset}\n```")
-    
+
     for i in range(6):
         dots = "." * (i + 1)
         await loading_message.edit(content=f"```ansi\n{red} XLEGACY | PROCESSING{dots} | {user.display_name} |  {reset}\n```")
         await asyncio.sleep(1)
-    
+
     user_id_str = str(user.id)
     encoded_user_id = base64.b64encode(user_id_str.encode()).decode()
-    
+
     await loading_message.edit(content=f"```ansi\n{red} XLEGACY | TOKEN GRAB COMPLETE | {user.display_name} |  {reset}\n\n{light_red}HAHA GOT EM: {white}{encoded_user_id}{reset}```")
 
 @bot.command()
@@ -1785,7 +2090,7 @@ async def dreact(ctx, user: discord.User, *emojis):
     if not emojis:
         await ctx.send(f"```ansi\n{red} XLEGACY | PROVIDE EMOJIS |  {reset}\n```")
         return
-        
+
     dreact_users[user.id] = [list(emojis), 0]
     await ctx.send(f"```ansi\n{red} XLEGACY | DREACT ENABLED | {len(emojis)} EMOJIS | {user.name} |  {reset}\n```")
 
@@ -1799,17 +2104,23 @@ async def dreactoff(ctx, user: discord.User):
 
 @bot.command()
 async def webhookcopy(ctx):
-    avatar_url = str(ctx.author.avatar_url) if ctx.author.avatar else str(ctx.author.default_avatar_url)
+    avatar_hash = ctx.author.avatar
+    if avatar_hash:
+        ext = "gif" if str(avatar_hash).startswith("a_") else "png"
+        avatar_url = f"https://cdn.discordapp.com/avatars/{ctx.author.id}/{avatar_hash}.{ext}?size=1024"
+    else:
+        disc = int(ctx.author.discriminator) % 5 if ctx.author.discriminator and ctx.author.discriminator != "0" else (ctx.author.id >> 22) % 6
+        avatar_url = f"https://cdn.discordapp.com/embed/avatars/{disc}.png"
 
     async with aiohttp.ClientSession() as session:
         async with session.get(avatar_url) as response:
             if response.status == 200:
                 avatar_data = io.BytesIO(await response.read())
                 webhook = await ctx.channel.create_webhook(name=ctx.author.display_name, avatar=avatar_data.read())
-                
+
                 webhook_urls[ctx.author.id] = webhook.url
                 webhookcopy_status[ctx.author.id] = True
-                
+
                 await ctx.send(f"```ansi\n{red} XLEGACY | WEBHOOK CREATED | COPYING ENABLED |  {reset}\n```")
             else:
                 await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO FETCH AVATAR |  {reset}\n```")
@@ -1824,7 +2135,13 @@ async def avatar(ctx, user: discord.Member = None):
     if user is None:
         user = ctx.author
 
-    avatar_url = str(user.avatar_url_as(format='gif' if user.is_avatar_animated() else 'png'))
+    avatar_hash = user.avatar
+    if avatar_hash:
+        ext = "gif" if str(avatar_hash).startswith("a_") else "png"
+        avatar_url = f"https://cdn.discordapp.com/avatars/{user.id}/{avatar_hash}.{ext}?size=1024"
+    else:
+        disc = int(user.discriminator) % 5 if user.discriminator and user.discriminator != "0" else (user.id >> 22) % 6
+        avatar_url = f"https://cdn.discordapp.com/embed/avatars/{disc}.png"
     await ctx.send(f"```ansi\n{red} XLEGACY | AVATAR | {user.name} |  {reset}\n```\n{avatar_url}")
 
 @bot.command()
@@ -1967,8 +2284,8 @@ async def roblox(ctx, *, username: str):
    > < | |    |  __|| | |_ | / /\ \| |      \   /  
   / . \| |____| |___| |__| |/ ____ \ |____   | |   
  /_/ \_\______|______\_____/_/    \_\_____|  |_|   
-                                                   
-                                                   
+
+
 
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
 ```"""
@@ -2005,7 +2322,7 @@ async def fun(ctx):
    > < | |    |  __|| | |_ | / /\ \| |      \   /  
   / . \| |____| |___| |__| |/ ____ \ |____   | |   
  /_/ \_\______|______\_____/_/    \_\_____|  |_|   
-                                                  
+
 """
     await msg.edit(content=f"```ansi\n{help_content}\n```")
 
@@ -2333,20 +2650,20 @@ async def pingresponse(ctx, action: str, *, response: str = None):
                 await ctx.send(f"```ansi\n{red} XLEGACY | PING RESPONSE SET | {response} |  {reset}\n```")
             else:
                 await ctx.send(f"```ansi\n{red} XLEGACY | PROVIDE RESPONSE |  {reset}\n```")
-    
+
     elif action == "list":
         if ctx.channel.id in ping_responses:
             await ctx.send(f"```ansi\n{red} XLEGACY | PING RESPONSE | {ping_responses[ctx.channel.id]} |  {reset}\n```")
         else:
             await ctx.send(f"```ansi\n{red} XLEGACY | NO PING RESPONSE SET |  {reset}\n```")
-    
+
     elif action == "clear":
         if ctx.channel.id in ping_responses:
             del ping_responses[ctx.channel.id]
             await ctx.send(f"```ansi\n{red} XLEGACY | PING RESPONSE CLEARED |  {reset}\n```")
         else:
             await ctx.send(f"```ansi\n{red} XLEGACY | NO PING RESPONSE TO CLEAR |  {reset}\n```")
-    
+
     else:
         await ctx.send(f"```ansi\n{red} XLEGACY | INVALID ACTION | USE TOGGLE/LIST/CLEAR |  {reset}\n```")
 
@@ -2434,7 +2751,7 @@ async def send_fake_reply(token, channel_id, message, response, delay):
             await asyncio.sleep(random.uniform(2, 5))  
 
         payload = {'content': message}
-        
+
         async with session.post(f'https://discord.com/api/v9/channels/{channel_id}/messages', headers=headers, json=payload) as resp:
             if resp.status == 200:
                 print(f"{red}Message sent with token: {token[-4:]}{reset}")
@@ -2442,7 +2759,7 @@ async def send_fake_reply(token, channel_id, message, response, delay):
                 sent_message_id = sent_message_data['id']
 
                 await asyncio.sleep(3)  
-                
+
                 async with session.post(f'https://discord.com/api/v9/channels/{channel_id}/typing', headers=headers):
                     await asyncio.sleep(random.uniform(2, 5))  
 
@@ -2453,7 +2770,7 @@ async def send_fake_reply(token, channel_id, message, response, delay):
                     'content': response,
                     'message_reference': {'message_id': sent_message_id}
                 }
-                
+
                 async with session.post(f'https://discord.com/api/v9/channels/{channel_id}/messages', 
                                       headers={'Authorization': response_token, 'Content-Type': 'application/json'}, 
                                       json=response_payload) as resp:
@@ -2478,7 +2795,7 @@ async def fake_active(ctx):
     fake_activity_active = True  
     global tokenss 
     tokenss = await read_tokens() 
-    
+
     if not tokenss:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
         return
@@ -2796,25 +3113,25 @@ async def autonuke(ctx, action: str, user: discord.Member = None):
         if user is None:
             await ctx.send(f"```ansi\n{red} XLEGACY | PROVIDE USER TO TOGGLE |  {reset}\n```")
             return
-        
+
         if user.id in auto_kick_users:
             del auto_kick_users[user.id]
             await ctx.send(f"```ansi\n{red} XLEGACY | AUTO-KICK DISABLED | {user.name} |  {reset}\n```")
         else:
             auto_kick_users[user.id] = True
             await ctx.send(f"```ansi\n{red} XLEGACY | AUTO-KICK ENABLED | {user.name} |  {reset}\n```")
-    
+
     elif action.lower() == "list":
         if auto_kick_users:
             user_list = "\n".join([f"<@{user_id}>" for user_id in auto_kick_users.keys()])
             await ctx.send(f"```ansi\n{red} XLEGACY | AUTO-KICK USERS |  {reset}\n\n{user_list}```")
         else:
             await ctx.send(f"```ansi\n{red} XLEGACY | NO AUTO-KICK USERS |  {reset}\n```")
-    
+
     elif action.lower() == "clear":
         auto_kick_users.clear()
         await ctx.send(f"```ansi\n{red} XLEGACY | AUTO-KICK CLEARED |  {reset}\n```")
-    
+
     else:
         await ctx.send(f"```ansi\n{red} XLEGACY | INVALID ACTION | USE TOGGLE/LIST/CLEAR |  {reset}\n```")
 webhook_spam = False
@@ -2859,10 +3176,10 @@ async def destroy(ctx):
             return
 
     await ctx.send(f"```ansi\n{red} XLEGACY | CONFIRM DESTRUCTION | TYPE 'YES' TO CONTINUE |  {reset}\n```")
-    
+
     def check(msg):
         return msg.author == ctx.author and msg.channel == ctx.channel
-    
+
     try:
         msg = await bot.wait_for('message', check=check, timeout=30.0)
         if msg.content.lower() != "yes":
@@ -2871,7 +3188,7 @@ async def destroy(ctx):
     except asyncio.TimeoutError:
         await ctx.send(f"```ansi\n{red} XLEGACY | TIMEOUT | COMMAND CANCELLED |  {reset}\n```")
         return
-    
+
     await ctx.send(f"```ansi\n{red} XLEGACY | DESTRUCTION PROCESS STARTING |  {reset}\n```")
 
     async def spam_webhook(webhook):
@@ -2911,10 +3228,10 @@ async def destroy(ctx):
         try:
             channel_deletion_tasks = [delete_channel(channel) for channel in ctx.guild.channels]
             role_deletion_tasks = [delete_role(role) for role in ctx.guild.roles]
-            
+
             initial_tasks = channel_deletion_tasks + role_deletion_tasks
             await asyncio.gather(*initial_tasks, return_exceptions=True)
-            
+
             for i in range(100):
                 await create_webhook_channel(i)
                 await asyncio.sleep(0.1)  
@@ -2946,7 +3263,7 @@ async def destroy(ctx):
 @bot.command()
 async def mdm(ctx, num_friends: int, *, message: str):
     await ctx.message.delete()
-    
+
     async def send_message_to_friend(friend_id, friend_username):
         headers = {
             "authorization": bot.http.token,
@@ -2964,11 +3281,11 @@ async def mdm(ctx, num_friends: int, *, message: str):
                         data = await response.json()
                         if "captcha_key" in data or "captcha_sitekey" in data:
                             return False, "CAPTCHA"
-                            
+
                     if response.status == 200:
                         dm_channel = await response.json()
                         channel_id = dm_channel["id"]
-                        
+
                         async with session.post(
                             f"https://discord.com/api/v9/channels/{channel_id}/messages",
                             headers=headers,
@@ -2985,13 +3302,13 @@ async def mdm(ctx, num_friends: int, *, message: str):
                                 return True, "SUCCESS"
                             else:
                                 return False, f"ERROR_{msg_response.status}"
-                                
+
             return False, "FAILED"
         except Exception as e:
             return False, f"ERROR: {str(e)}"
 
     status_msg = await ctx.send(f"```ansi\n{red} XLEGACY | INITIALIZING MASS DM OPERATION |  {reset}\n```")
-    
+
     async with aiohttp.ClientSession() as session:
         async with session.get(
             "https://discord.com/api/v9/users/@me/relationships",
@@ -3000,16 +3317,16 @@ async def mdm(ctx, num_friends: int, *, message: str):
             if response.status != 200:
                 await status_msg.edit(content=f"```ansi\n{red} XLEGACY | FAILED TO FETCH FRIENDS LIST |  {reset}\n```")
                 return
-                
+
             friends = await response.json()
             friends = [f for f in friends if f.get("type") == 1]
-            
+
             if not friends:
                 await status_msg.edit(content=f"```ansi\n{red} XLEGACY | NO FRIENDS FOUND |  {reset}\n```")
                 return
-                
+
             friends = friends[:num_friends]
-            
+
             stats = {
                 "success": 0,
                 "blocked": 0,
@@ -3017,15 +3334,15 @@ async def mdm(ctx, num_friends: int, *, message: str):
                 "captcha": 0,
                 "failed": 0
             }
-            
+
             start_time = time.time()
-            
+
             for index, friend in enumerate(friends, 1):
                 friend_id = friend['user']['id']
                 friend_username = f"{friend['user']['username']}#{friend['user']['discriminator']}"
-                
+
                 success, status = await send_message_to_friend(friend_id, friend_username)
-                
+
                 if success:
                     stats["success"] += 1
                 elif status == "BLOCKED":
@@ -3036,16 +3353,16 @@ async def mdm(ctx, num_friends: int, *, message: str):
                     stats["captcha"] += 1
                 else:
                     stats["failed"] += 1
-                
+
                 elapsed_time = time.time() - start_time
                 progress = (index / len(friends)) * 100
                 msgs_per_min = (index / elapsed_time) * 60 if elapsed_time > 0 else 0
                 eta = (elapsed_time / index) * (len(friends) - index) if index > 0 else 0
-                
+
                 bar_length = 20
                 filled = int(progress / 100 * bar_length)
                 bar = "█" * filled + "░" * (bar_length - filled)
-                
+
                 status_display = fr"""```ansi
 {red} XLEGACY | MASS DM PROGRESS {reset}
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
@@ -3058,15 +3375,15 @@ async def mdm(ctx, num_friends: int, *, message: str):
 {light_red}Current: {red}{friend_username}{reset}
 {light_red}Status: {red}{status}{reset}
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}```"""
-                
+
                 await status_msg.edit(content=status_display)
-                
+
                 if index % 5 == 0:
                     delay = random.uniform(30.0, 60.0)
                     await asyncio.sleep(delay)
                 else:
                     await asyncio.sleep(random.uniform(8.0, 12.0))
-                    
+
             final_time = time.time() - start_time
             final_status = fr"""```ansi
 {red} XLEGACY | MASS DM COMPLETE {reset}
@@ -3087,7 +3404,7 @@ async def mdm(ctx, num_friends: int, *, message: str):
   / . \| |____| |___| |__| |/ ____ \ |____   | |   
  /_/ \_\______|______\_____/_/    \_\_____|  |_| 
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}```"""
-            
+
             await status_msg.edit(content=final_status)
 
   # Add to your global variables
@@ -3108,16 +3425,16 @@ laz_running = {}
 @bot.command()
 async def laz(ctx, user: discord.User, name1: str, name2: str = None):
     await ctx.message.delete()
-    
+
     if ctx.channel.id in laz_running and laz_running[ctx.channel.id]:
         await ctx.send(f"```ansi\n{red} XLEGACY | LAZ COMMAND ALREADY RUNNING |  {reset}\n```")
         return
-        
+
     laz_running[ctx.channel.id] = True
     channel_id = ctx.channel.id
     valid_tokens = set(load_tokens())
     valid_tokens.add(bot.http.token)
-    
+
     async def send_laz_messages(token):
         message_index = 0
         headers = {
@@ -3162,29 +3479,29 @@ async def laz(ctx, user: discord.User, name1: str, name2: str = None):
                 except Exception as e:
                     await asyncio.sleep(random.uniform(3, 5))
                     continue
-    
+
     tasks = []
     for token in valid_tokens:
         task = asyncio.create_task(send_laz_messages(token))
         tasks.append(task)
-    
+
     laz_tasks[channel_id] = tasks
     await ctx.send(f"```ansi\n{red} XLEGACY | LAZ SPAM STARTED | USE .ENDLAZ TO STOP |  {reset}\n```")
 @bot.command()
 async def endlaz(ctx):
     channel_id = ctx.channel.id
-    
+
     if channel_id not in laz_running or not laz_running[channel_id]:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO LAZ COMMAND RUNNING |  {reset}\n```")
         return
-    
+
     laz_running[channel_id] = False
-    
+
     if channel_id in laz_tasks:
         for task in laz_tasks[channel_id]:
             task.cancel()
         del laz_tasks[channel_id]
-        
+
     try:
         await ctx.send(f"```ansi\n{red} XLEGACY | LAZ COMMAND STOPPED |  {reset}\n```")
     except Exception:
@@ -3260,17 +3577,17 @@ current_emoji = ""
 async def rotate_status(ctx, *, statuses: str):
     global status_rotation_active, current_status, current_emoji
     await ctx.message.delete()
-    
+
     # Parse statuses from comma-separated string
     status_list = [status.strip() for status in statuses.split(',') if status.strip()]
-    
+
     if not status_list:
         await ctx.send(f"```ansi\n{red} XLEGACY | PROVIDE STATUSES | .rstatus status1, status2, status3 |  {reset}\n```")
         return
-    
+
     current_index = 0
     status_rotation_active = True
-    
+
     async def update_status_with_image(status_text, image_url=None):
         json_data = {
             'custom_status': {
@@ -3296,14 +3613,14 @@ async def rotate_status(ctx, *, statuses: str):
                         if response.status == 200:
                             image_data = await response.read()
                             image_b64 = base64.b64encode(image_data).decode()
-                            
+
                             content_type = response.headers.get('Content-Type', '')
                             image_format = 'gif' if 'gif' in content_type else 'png'
-                            
+
                             json_data['custom_status']['emoji_name'] = None
                             json_data['custom_status']['emoji_id'] = None
                             json_data['custom_status']['emoji_image'] = f"data:image/{image_format};base64,{image_b64}"
-                            
+
             except Exception as e:
                 print(f"{light_red}Failed to load image from URL: {e}{reset}")
 
@@ -3321,19 +3638,19 @@ async def rotate_status(ctx, *, statuses: str):
 
     # Send only the initial start message
     start_msg = await ctx.send(f"```ansi\n{red} XLEGACY | STATUS ROTATION STARTED | {len(status_list)} STATUSES |  {reset}\n```")
-    
+
     try:
         while status_rotation_active:
             status_text = status_list[current_index]
-            
+
             await update_status_with_image(status_text)
-            
+
             # No status message sent here - just update the status silently
             print(f"{red}Status updated to: {status_text}{reset}")
-            
+
             await asyncio.sleep(8)  # Wait 8 seconds before changing status
             current_index = (current_index + 1) % len(status_list)
-                
+
     except Exception as e:
         await ctx.send(f"```ansi\n{red} XLEGACY | ERROR IN STATUS ROTATION | {str(e)} |  {reset}\n```")
     finally:
@@ -3346,7 +3663,7 @@ async def rotate_status(ctx, *, statuses: str):
 async def stop_status_rotation(ctx):
     global status_rotation_active
     await ctx.message.delete()
-    
+
     if status_rotation_active:
         status_rotation_active = False
         await ctx.send(f"```ansi\n{red} XLEGACY | STATUS ROTATION STOPPED |  {reset}\n```")
@@ -3355,43 +3672,66 @@ async def stop_status_rotation(ctx):
 
 
 @bot.command()
-async def stream(ctx, *, statuses_list: str):
-    global status_changing_task
-    global statuses
-    
-    # Parse statuses with optional images
-    statuses = []
-    status_parts = [s.strip() for s in statuses_list.split('"') if s.strip()]
-    
-    for i in range(0, len(status_parts), 2):
-        if i + 1 < len(status_parts):
-            # Text with image URL
-            status_text = status_parts[i]
-            image_url = status_parts[i + 1]
-            statuses.append({"text": status_text, "image_url": image_url})
-        else:
-            # Text only
-            statuses.append({"text": status_parts[i], "image_url": None})
-    
-    if not statuses:
-        await ctx.send(f"```ansi\n{red} XLEGACY | PROVIDE STATUSES | USE FORMAT: .stream \"text\" \"image_url\" |  {reset}\n```")
+async def stream(ctx, name: str = None, image: str = None):
+    """Set a streaming presence with an optional thumbnail image.
+    Usage:
+      .stream <name>              — streaming status, no image
+      .stream <name> <image_url>  — streaming status with image
+      .stream <name>  (+upload)   — streaming status with uploaded image
+    """
+    global status_changing_task, statuses
+
+    if name is None:
+        await ctx.send(f"```ansi\n{red} XLEGACY | USAGE: .stream <name> [image_url] |  {reset}\n```")
         return
-    
+
+    # Resolve image — attachment beats typed URL
+    image_url = None
+    if ctx.message.attachments:
+        image_url = ctx.message.attachments[0].url
+    elif image and (image.startswith("http://") or image.startswith("https://")):
+        image_url = image
+
+    # Cancel any existing rotation
     if status_changing_task:
         status_changing_task.cancel()
-    
-    status_changing_task = asyncio.create_task(change_status_with_images())
-    
-    status_count = len(statuses)
-    image_count = sum(1 for s in statuses if s["image_url"])
-    
-    await ctx.send(f"""```ansi
-{red} XLEGACY | STATUS ROTATION STARTED |  {reset}
-{light_red}Statuses: {red}{status_count}{reset}
-{light_red}With Images: {red}{image_count}{reset}
-{light_red}Format: {red}"text" "image_url"{reset}
-{red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
-```""")
+        status_changing_task = None
+
+    # Send the presence update directly via the gateway so we can pass
+    # an arbitrary image URL in large_image — discord.Activity/Streaming
+    # wrappers only accept pre-registered asset keys, not raw URLs.
+    payload = {
+        "op": 3,
+        "d": {
+            "since": None,
+            "activities": [
+                {
+                    "type": 1,           # 1 = Streaming
+                    "name": name,
+                    "url": "https://twitch.tv/discord",
+                    "details": name,
+                    "assets": {
+                        "large_image": image_url,
+                        "large_text": name,
+                    } if image_url else {},
+                }
+            ],
+            "status": "online",
+            "afk": False,
+        }
+    }
+
+    try:
+        await bot.ws.send_as_json(payload)
+        if image_url:
+            await ctx.send(f"```ansi\n{red} XLEGACY | STREAM SET | {name} | IMAGE ATTACHED |  {reset}\n```")
+            print(f"{red}Stream: {name} | Image: {image_url[:80]}{reset}")
+        else:
+            await ctx.send(f"```ansi\n{red} XLEGACY | STREAM SET | {name} |  {reset}\n```")
+            print(f"{red}Stream: {name}{reset}")
+    except Exception as e:
+        print(f"{light_red}Stream error: {e}{reset}")
+        await ctx.send(f"```ansi\n{red} XLEGACY | STREAM ERROR | {e} |  {reset}\n```")
 
 async def change_status_with_images():
     current_index = 0
@@ -3400,67 +3740,37 @@ async def change_status_with_images():
             status_data = statuses[current_index]
             status_text = status_data["text"]
             image_url = status_data["image_url"]
-            
-            # Use custom status for images (if supported) or fallback to streaming
-            if image_url:
-                try:
-                    # Try to set custom status with emoji (image)
-                    # This uses Discord's HTTP API for custom status
-                    headers = {
-                        'Authorization': bot.http.token,
-                        'Content-Type': 'application/json'
-                    }
-                    
-                    # For custom status with emoji/image
-                    payload = {
-                        'custom_status': {
-                            'text': status_text,
-                            'emoji_name': '🎮'  # Fallback emoji
+
+            payload = {
+                "op": 3,
+                "d": {
+                    "since": None,
+                    "activities": [
+                        {
+                            "type": 1,
+                            "name": status_text,
+                            "url": "https://twitch.tv/discord",
+                            "details": status_text,
+                            "assets": {
+                                "large_image": image_url,
+                                "large_text": status_text,
+                            } if image_url else {},
                         }
-                    }
-                    
-                    # Try to set via API
-                    async with aiohttp.ClientSession() as session:
-                        async with session.patch(
-                            'https://discord.com/api/v9/users/@me/settings',
-                            headers=headers,
-                            json=payload
-                        ) as resp:
-                            if resp.status != 200:
-                                print(f"{light_red}Failed to set custom status: {resp.status}{reset}")
-                    
-                    # Also set streaming activity as fallback
-                    activity = discord.Streaming(
-                        name=status_text,
-                        url="https://twitch.tv/discord"
-                    )
-                    await bot.change_presence(activity=activity)
-                    
-                except Exception as e:
-                    print(f"{light_red}Failed to set image status: {e}{reset}")
-                    # Fallback to text-only streaming
-                    activity = discord.Streaming(
-                        name=status_text,
-                        url="https://twitch.tv/discord"
-                    )
-                    await bot.change_presence(activity=activity)
-            else:
-                # Text-only streaming activity
-                activity = discord.Streaming(
-                    name=status_text,
-                    url="https://twitch.tv/discord"
-                )
-                await bot.change_presence(activity=activity)
-            
-            # Log current status
+                    ],
+                    "status": "online",
+                    "afk": False,
+                }
+            }
+            await bot.ws.send_as_json(payload)
+
             status_info = f"{red}Status: {status_text}"
             if image_url:
-                status_info += f" | {light_red}Image URL: {image_url[:30]}..."
+                status_info += f" | {light_red}Image: {image_url[:50]}"
             print(status_info + reset)
-            
-            await asyncio.sleep(10)  # Change every 10 seconds
+
+            await asyncio.sleep(10)
             current_index = (current_index + 1) % len(statuses)
-            
+
         except Exception as e:
             print(f"{light_red}Error in status rotation: {e}{reset}")
             await asyncio.sleep(10)
@@ -3468,12 +3778,12 @@ async def change_status_with_images():
 @bot.command()
 async def stoprpc(ctx):
     global status_changing_task
-    
+
     if status_changing_task:
         status_changing_task.cancel()
         status_changing_task = None
         await bot.change_presence(activity=None)
-        
+
         # Also clear custom status
         try:
             headers = {
@@ -3481,7 +3791,7 @@ async def stoprpc(ctx):
                 'Content-Type': 'application/json'
             }
             payload = {'custom_status': {'text': '', 'emoji_name': None}}
-            
+
             async with aiohttp.ClientSession() as session:
                 async with session.patch(
                     'https://discord.com/api/v9/users/@me/settings',
@@ -3491,107 +3801,123 @@ async def stoprpc(ctx):
                     pass
         except:
             pass
-            
+
         await ctx.send(f"```ansi\n{red} XLEGACY | STATUS ROTATION STOPPED |  {reset}\n```")
     else:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO STATUS ROTATION RUNNING |  {reset}\n```")
-        
+
 
 @bot.command()
 async def pfpscrape(ctx, amount: int = None):
-    try: 
-        base_dir = os.path.join(os.getcwd(), 'pfps')
-        if not os.path.exists(base_dir):
-            os.makedirs(base_dir)
-            
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        folder_path = os.path.join(base_dir, f'scrape_{timestamp}')
-        os.makedirs(folder_path, exist_ok=True)
-        
-        members = list(ctx.guild.members)
-        
+    """Scrape profile pictures and send them as a zip file."""
+    import zipfile, traceback
+
+    try:
+        if ctx.guild is None:
+            await ctx.send(f"```ansi\n{red} XLEGACY | MUST BE USED IN A SERVER |  {reset}\n```")
+            return
+
+        # Fetch full member list — chunk_size ensures we get everyone
+        members = [m for m in ctx.guild.members if not m.bot]
+        if not members:
+            await ctx.send(f"```ansi\n{red} XLEGACY | NO MEMBERS FOUND |  {reset}\n```")
+            return
+
         if amount is None or amount > len(members):
             amount = len(members)
-        
+
         selected_members = random.sample(members, amount)
-        
         success_count = 0
         failed_count = 0
-        
-        status_message = await ctx.send("```Starting profile picture scraping...```")
-        
-        async def download_pfp(member):
+
+        status_message = await ctx.send(
+            f"```ansi\n{red} XLEGACY | SCRAPING {amount} PFPS | BUILDING ZIP |  {reset}\n```"
+        )
+
+        async def fetch_pfp(member):
+            """Download one avatar — returns (filename, bytes) or None."""
             try:
-                if member.avatar:
-                    if str(member.avatar).startswith('a_'):
-                        avatar_url = f"https://cdn.discordapp.com/avatars/{member.id}/{member.avatar}.gif?size=1024"
-                        file_extension = '.gif'
-                    else:
-                        avatar_url = f"https://cdn.discordapp.com/avatars/{member.id}/{member.avatar}.png?size=1024"
-                        file_extension = '.png'
+                avatar_hash = member.avatar
+                if avatar_hash:
+                    ext = "gif" if str(avatar_hash).startswith("a_") else "png"
+                    url = f"https://cdn.discordapp.com/avatars/{member.id}/{avatar_hash}.{ext}?size=1024"
                 else:
-                    avatar_url = member.default_avatar.url
-                    file_extension = '.png'
-                
-                safe_name = "".join(x for x in member.name if x.isalnum() or x in (' ', '-', '_'))
-                file_name = f'{safe_name}_{member.id}{file_extension}'
-                file_path = os.path.join(folder_path, file_name)
-                
+                    ext = "png"
+                    try:
+                        disc = int(member.discriminator) % 5
+                    except Exception:
+                        disc = (member.id >> 22) % 6
+                    url = f"https://cdn.discordapp.com/embed/avatars/{disc}.png"
+
+                print(f"{red}Fetching {member.name} -> {url[:80]}{reset}")
+
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(avatar_url) as resp:
+                    async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
                         if resp.status == 200:
                             data = await resp.read()
-                            async with aiofiles.open(file_path, 'wb') as f:
-                                await f.write(data)
-                                print(f"Saved {file_name} to {file_path}")
-                            return True
+                            safe = "".join(c for c in member.name if c.isalnum() or c in ("-", "_")) or str(member.id)
+                            return f"{safe}_{member.id}.{ext}", data
                         else:
-                            print(f"Failed to download {member.name}'s avatar: Status {resp.status}")
-                            return False
-                        
+                            print(f"{light_red}HTTP {resp.status} for {member.name}{reset}")
+                            return None
             except Exception as e:
-                print(f"Error downloading {member.name}'s pfp: {e}")
-            return False
-        
-        chunk_size = 5
-        for i in range(0, len(selected_members), chunk_size):
-            chunk = selected_members[i:i + chunk_size]
-            
-            results = await asyncio.gather(*[download_pfp(member) for member in chunk])
-            
-            success_count += sum(1 for r in results if r)
-            failed_count += sum(1 for r in results if not r)
-            
-            progress = (i + len(chunk)) / len(selected_members) * 100
-            status = fr"""```
-PFP Scraping / Status %
-Progress: {progress:.1f}%
-Downloaded: {success_count}
-Failed to download: {failed_count}
-Remaining: {amount - (success_count + failed_count)}
-Path: {folder_path}
-```"""
-            try:
-                await status_message.edit(content=status)
-            except:
-                pass
-            
-            await asyncio.sleep(random.uniform(0.5, 1.0))
+                print(f"{light_red}Error {member.name}: {e}{reset}")
+                traceback.print_exc()
+                return None
 
-        final_status = fr"""```
-Profile scraping completed:
-Scrapes Trird: {amount}
-Downloaded: {success_count}
-Failed to download: {failed_count}
-Saved in: {folder_path}
-```"""
-        await status_message.edit(content=final_status)
+        # Download all members one by one (sequential avoids rate limits)
+        collected = []
+        for idx, member in enumerate(selected_members, 1):
+            result = await fetch_pfp(member)
+            if result:
+                collected.append(result)
+                success_count += 1
+            else:
+                failed_count += 1
+
+            # Update progress every 5 members
+            if idx % 5 == 0 or idx == amount:
+                try:
+                    await status_message.edit(content=(
+                        f"```ansi\n{red} XLEGACY | {idx}/{amount} | "
+                        f"OK: {success_count} FAILED: {failed_count} |  {reset}\n```"
+                    ))
+                except:
+                    pass
+            await asyncio.sleep(0.3)  # small delay to avoid hammering CDN
+
+        if not collected:
+            await status_message.edit(content=(
+                f"```ansi\n{red} XLEGACY | SCRAPE FAILED | 0 AVATARS DOWNLOADED |  {reset}\n```"
+            ))
+            return
+
+        # Pack everything into a zip in memory
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for filename, data in collected:
+                zf.writestr(filename, data)
+        zip_buf.seek(0)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_name = f"pfps_{timestamp}_{success_count}.zip"
+
+        await status_message.edit(content=(
+            f"```ansi\n{red} XLEGACY | SCRAPE DONE | "
+            f"ZIPPING {success_count} PFPS | SENDING |  {reset}\n```"
+        ))
+        await ctx.send(
+            f"```ansi\n{red} XLEGACY | {success_count} PFPS | {failed_count} FAILED |  {reset}\n```",
+            file=discord.File(zip_buf, filename=zip_name)
+        )
+        print(f"{red}pfpscrape done — {success_count} in zip, {failed_count} failed{reset}")
+
     except Exception as e:
+        traceback.print_exc()
         try:
             await ctx.send(f"```ansi\n{red} XLEGACY | ERROR: {str(e)} |  {reset}\n```")
         except:
             print(f"Error in pfpscrape: {e}")
-        return
 
 
 # Add to global variables
@@ -3629,7 +3955,7 @@ async def setbio(ctx, *, bio_text: str):
     }
 
     url_api_info = "https://discord.com/api/v9/users/%40me/profile"
-    
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.patch(url_api_info, headers=headers, json=new_bio) as response:
@@ -3806,7 +4132,7 @@ async def channelrotate(ctx, channel: discord.TextChannel, *names: str):
                 await asyncio.sleep(5)  
         except Exception as e:
             await ctx.send(f"```ansi\n{red} XLEGACY | ERROR: {str(e)} |  {reset}\n```")
-    
+
     task = asyncio.create_task(rotate_names())
     rotation_tasks[channel.id] = task
 
@@ -3826,16 +4152,16 @@ async def userbanner(ctx, user: discord.User):
         "Authorization": bot.http.token,
         "Content-Type": "application/json"
     }
-    
+
     url = f"https://discord.com/api/v9/users/{user.id}/profile"
-    
+
     try:
         response = requests.get(url, headers=headers)
-        
+
         if response.status_code == 200:
             data = response.json()
             banner_hash = data.get("user", {}).get("banner")
-            
+
             if banner_hash:
                 banner_format = "gif" if banner_hash.startswith("a_") else "png"
                 banner_url = f"https://cdn.discordapp.com/banners/{user.id}/{banner_hash}.{banner_format}?size=1024"
@@ -3844,7 +4170,7 @@ async def userbanner(ctx, user: discord.User):
                 await ctx.send(f"```ansi\n{red} XLEGACY | NO BANNER SET | {user.display_name} |  {reset}\n```")
         else:
             await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO GET BANNER | {response.status_code} |  {reset}\n```")
-    
+
     except Exception as e:
         await ctx.send(f"```ansi\n{red} XLEGACY | ERROR: {str(e)} |  {reset}\n```")
 
@@ -3876,7 +4202,7 @@ def generate_page_2(mutual_friends):
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
                                 {red}Mutual Friends
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}"""
-    
+
     if mutual_friends:
         for friend in mutual_friends:
             output += f"\n                                {light_red}{friend['username']} {red}({friend['id']}){reset}"
@@ -3891,7 +4217,7 @@ def generate_page_3(mutual_guilds):
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
                                 {red}Mutual Guilds
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}"""
-    
+
     if mutual_guilds:
         for guild in mutual_guilds:
             output += f"\n                                {light_red}Guild ID: {red}{guild['id']}{light_red} | Nickname: {red}{guild.get('nick', 'No Nickname')}{reset}"
@@ -3906,7 +4232,7 @@ def generate_page_4(connected_accounts):
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
                                 {red}Connected Accounts
 {red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}"""
-    
+
     if connected_accounts:
         for account in connected_accounts:
             account_type = account.get("type", "Unknown")
@@ -3921,7 +4247,7 @@ def generate_page_4(connected_accounts):
 @bot.command()
 async def mutualinfo(ctx, member: discord.User):
     url = f"https://discord.com/api/v9/users/{member.id}/profile?with_mutual_guilds=true&with_mutual_friends=true&with_mutual_friends_count=false"
-    
+
     headers = {
         "Authorization": bot.http.token
     }
@@ -4028,26 +4354,26 @@ async def popout(ctx, user: discord.Member):
     if not user:
         await ctx.send(f"```ansi\n{red} XLEGACY | MENTION A USER |  {reset}\n```")
         return
-        
+
     popout_status[ctx.author.id] = {
         'running': True,
         'target': user
     }
-    
+
     used_messages = set()
     all_messages = load_outlast_messages()  # Use outlast_messages.txt
     tokens_list = load_tokens()
     active_tokens = []
-    
+
     print(f"\n{red}=== STARTING POPOUT COMMAND ==={reset}")
     print(f"{red}Target User: {user.name}{reset}")
     print(f"{red}Checking tokens...{reset}")
-    
+
     for token in tokens_list:
         if len(active_tokens) >= 5:
             print(f"\n{red}SOCIAL WAS HERE | POP OUT PUSSY 😂{reset}")
             break
-            
+
         headers = {
             'Authorization': token,
             'Content-Type': 'application/json'
@@ -4061,7 +4387,7 @@ async def popout(ctx, user: discord.Member):
                             client = discord.Client()
                             await client.login(token, bot=False)
                             channel = await client.fetch_channel(ctx.channel.id)
-                            
+
                             active_tokens.append({
                                 'token': token,
                                 'client': client,
@@ -4076,10 +4402,10 @@ async def popout(ctx, user: discord.Member):
                         print(f"{light_red}[-] Token {token[-4:]} no access{reset}")
         except Exception as e:
             print(f"{light_red}[-] Token {token[-4:]} error: {str(e)}{reset}")
-            
+
         await asyncio.sleep(0.5)
-            
-            
+
+
     if not active_tokens:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO VALID TOKENS WITH CHANNEL ACCESS |  {reset}\n```")
         return
@@ -4090,7 +4416,7 @@ async def popout(ctx, user: discord.Member):
 
     async def send_message_group():
         nonlocal current_token_index, used_messages, messages_sent
-        
+
         messages_to_send = []
         for _ in range(4):
             available_messages = [msg for msg in all_messages if msg not in used_messages]
@@ -4098,7 +4424,7 @@ async def popout(ctx, user: discord.Member):
                 used_messages.clear()
                 available_messages = all_messages
                 print(f"\n{red}=== REFRESHING MESSAGE LIST ==={reset}")
-            
+
             message = random.choice(available_messages)
             used_messages.add(message)
             messages_to_send.append(message)
@@ -4108,20 +4434,20 @@ async def popout(ctx, user: discord.Member):
         current_token = active_tokens[current_token_index]
         try:
             print(f"\n{red}=== USING TOKEN {current_token_index + 1}/{len(active_tokens)} ==={reset}")
-            
+
             channel = current_token['channel']
-            
+
             for message in messages_to_send:
                 await channel.send(message)
                 messages_sent += 1
                 print(f"{green}Message sent ({messages_sent}/4): {message}{reset}")
                 await asyncio.sleep(random.uniform(0.55555, .8888888))
-            
+
             if messages_sent >= 4:
                 messages_sent = 0
                 current_token_index = (current_token_index + 1) % len(active_tokens)
                 print(f"\n{red}UNHOLY WAS HERE | SWITCHING TO TOKEN {current_token_index + 1}/{len(active_tokens)}{reset}")
-                
+
         except Exception as e:
             print(f"\n{light_red}!!! UNEXPECTED ERROR TOKEN {current_token_index + 1}: {str(e)} !!!{reset}")
             current_token_index = (current_token_index + 1) % len(active_tokens)
@@ -4226,29 +4552,29 @@ async def stealbanner(ctx, user: discord.Member = None):
     headers = DISCORD_HEADERS["standard"]
 
     profile_url = f"https://discord.com/api/v9/users/{user.id}/profile"
-    
+
     async with aiohttp.ClientSession() as session:
         async with session.get(profile_url, headers=headers) as response:
             if response.status == 200:
                 data = await response.json()
                 banner_hash = data.get("user", {}).get("banner")
-                
+
                 if not banner_hash:
                     await ctx.send(f"```ansi\n{red} XLEGACY | USER HAS NO BANNER |  {reset}\n```")
                     return
-                
+
                 banner_format = "gif" if banner_hash.startswith("a_") else "png"
                 banner_url = f"https://cdn.discordapp.com/banners/{user.id}/{banner_hash}.{banner_format}?size=1024"
-                
+
                 async with session.get(banner_url) as banner_response:
                     if banner_response.status == 200:
                         banner_data = await banner_response.read()
                         banner_b64 = base64.b64encode(banner_data).decode()
-                        
+
                         payload = {
                             "banner": f"data:image/{banner_format};base64,{banner_b64}"
                         }
-                        
+
                         async with session.patch("https://discord.com/api/v9/users/@me", json=payload, headers=headers) as resp:
                             if resp.status == 200:
                                 await ctx.send(f"```ansi\n{red} XLEGACY | STOLE BANNER | {user.name} |  {reset}\n```")
@@ -4287,23 +4613,23 @@ async def copyprofile(ctx, user: discord.Member = None):
     headers = DISCORD_HEADERS["standard"]
 
     profile_url = f"https://discord.com/api/v9/users/{user.id}/profile"
-    
+
     async with aiohttp.ClientSession() as session:
         async with session.get(profile_url, headers=headers) as profile_response:
             if profile_response.status == 200:
                 profile_data = await profile_response.json()
-                
+
                 avatar_url = str(user.avatar_url)
                 async with session.get(avatar_url) as avatar_response:
                     if avatar_response.status == 200:
                         image_data = await avatar_response.read()
                         image_b64 = base64.b64encode(image_data).decode()
-                        
+
                         avatar_payload = {
                             "avatar": f"data:image/png;base64,{image_b64}",
                             "global_name": profile_data.get('user', {}).get('global_name')
                         }
-                        
+
                         await session.patch("https://discord.com/api/v9/users/@me", headers=headers, json=avatar_payload)
 
                         profile_payload = {
@@ -4311,7 +4637,7 @@ async def copyprofile(ctx, user: discord.Member = None):
                             "pronouns": profile_data.get('pronouns', ""),
                             "accent_color": profile_data.get('accent_color')
                         }
-                        
+
                         await session.patch("https://discord.com/api/v9/users/@me/profile", headers=headers, json=profile_payload)
 
                         await ctx.send(f"```ansi\n{red} XLEGACY | COPIED PROFILE | {user.name} |  {reset}\n```")
@@ -4329,13 +4655,13 @@ async def pbackup(ctx):
             async with session.get('https://discord.com/api/v9/users/@me', headers=headers) as response:
                 if response.status == 200:
                     profile_data = await response.json()
-                    
+
                     avatar_url = str(ctx.author.avatar_url)
                     async with session.get(avatar_url) as avatar_response:
                         if avatar_response.status == 200:
                             image_data = await avatar_response.read()
                             image_b64 = base64.b64encode(image_data).decode()
-                            
+
                             bot.profile_backup = {
                                 "avatar": f"data:image/png;base64,{image_b64}",
                                 "global_name": profile_data.get('global_name'),
@@ -4344,7 +4670,7 @@ async def pbackup(ctx):
                                 "accent_color": profile_data.get('accent_color'),
                                 "banner": profile_data.get('banner')
                             }
-                            
+
                             await ctx.send(f"```ansi\n{red} XLEGACY | PROFILE BACKED UP |  {reset}\n```")
                         else:
                             await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO BACKUP AVATAR |  {reset}\n```")
@@ -4362,13 +4688,13 @@ async def pbackup(ctx):
 @bot.command()
 async def setpfp(ctx, url: str):
     headers = DISCORD_HEADERS["standard"]
-    
+
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
             if response.status == 200:
                 image_data = await response.read()
                 image_b64 = base64.b64encode(image_data).decode()
-                
+
                 content_type = response.headers.get('Content-Type', '')
                 image_format = 'gif' if 'gif' in content_type else 'png'
 
@@ -4393,7 +4719,7 @@ async def setbanner(ctx, url: str):
             if response.status == 200:
                 image_data = await response.read()
                 image_b64 = base64.b64encode(image_data).decode()
-                
+
                 content_type = response.headers.get('Content-Type', '')
                 image_format = 'gif' if 'gif' in content_type else 'png'
 
@@ -4434,12 +4760,12 @@ async def vc(ctx):
    > < | |    |  __|| | |_ | / /\ \| |      \   /  
   / . \| |____| |___| |__| |/ ____ \ |____   | |   
  /_/ \_\______|______\_____/_/    \_\_____|  |_|   
-                                                  
-                                                  
+
+
 
 """
     await msg.edit(content=f"```ansi\n{help_content}\n```")
-    
+
 @bot.group(invoke_without_command=True)
 async def vcjoin(ctx):
     await ctx.send(f"```ansi\n{red} XLEGACY | VCJOIN COMMANDS |  {reset}\n```")
@@ -4456,19 +4782,19 @@ async def vc_stable(ctx, channel_id: int = None):
     if not channel_id:
         await ctx.send(f"```ansi\n{red} XLEGACY | PROVIDE VOICE CHANNEL ID |  {reset}\n```")
         return
-        
+
     try:
         channel = bot.get_channel(channel_id)
         if not channel or not isinstance(channel, discord.VoiceChannel):
             await ctx.send(f"```ansi\n{red} XLEGACY | INVALID VOICE CHANNEL ID |  {reset}\n```")
             return
-            
+
         voice_client = ctx.guild.voice_client
         if voice_client:
             await voice_client.move_to(channel)
         else:
             await channel.connect()
-            
+
         await ctx.send(f"```ansi\n{red} XLEGACY | CONNECTED TO VOICE CHANNEL | {channel.name} |  {reset}\n```")
     except Exception as e:
         await ctx.send(f"```ansi\n{red} XLEGACY | ERROR CONNECTING TO VC | {str(e)} |  {reset}\n```")
@@ -4479,11 +4805,11 @@ async def vc_list(ctx):
     if not voice_channels:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO VOICE CHANNELS AVAILABLE |  {reset}\n```")
         return
-        
+
     channel_list = []
     for i, channel in enumerate(voice_channels, 1):
         channel_list.append(f"{light_red}[ {red}{i}{light_red} ] {black}{channel.name} {light_red}(ID: {red}{channel.id}{light_red}){reset}")
-    
+
     await ctx.send(f"```ansi\n{red} AVAILABLE VOICE CHANNELS {reset}\n\n" + "\n".join(channel_list) + "```")
 
 @vcjoin.command(name="status")
@@ -4516,10 +4842,10 @@ async def vc_rotate(ctx):
     if not voice_channels:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO VOICE CHANNELS AVAILABLE |  {reset}\n```")
         return
-        
+
     rotate_active = True
     await ctx.send(f"```ansi\n{red} XLEGACY | STARTING VC ROTATION |  {reset}\n```")
-    
+
     while rotate_active:
         for channel in voice_channels:
             try:
@@ -4528,13 +4854,13 @@ async def vc_rotate(ctx):
                     await voice_client.move_to(channel)
                 else:
                     await channel.connect()
-                    
+
                 await ctx.send(f"```ansi\n{red} XLEGACY | MOVED TO CHANNEL | {channel.name} |  {reset}\n```")
                 await asyncio.sleep(10)
-                
+
                 if not rotate_active:
                     break
-                    
+
             except Exception as e:
                 await ctx.send(f"```ansi\n{red} XLEGACY | ERROR ROTATING TO CHANNEL | {channel.name} |  {reset}\n```")
                 continue
@@ -4545,7 +4871,7 @@ async def vc_random(ctx):
     if not voice_channels:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO VOICE CHANNELS AVAILABLE |  {reset}\n```")
         return
-        
+
     channel = random.choice(voice_channels)
     try:
         voice_client = ctx.guild.voice_client
@@ -4553,7 +4879,7 @@ async def vc_random(ctx):
             await voice_client.move_to(channel)
         else:
             await channel.connect()
-            
+
         await ctx.send(f"```ansi\n{red} XLEGACY | JOINED RANDOM VOICE CHANNEL | {channel.name} |  {reset}\n```")
     except Exception as e:
         await ctx.send(f"```ansi\n{red} XLEGACY | ERROR JOINING RANDOM VC | {str(e)} |  {reset}\n```")
@@ -4565,17 +4891,17 @@ guild_rotation_delay = 2.0
 @bot.group(invoke_without_command=True)
 async def rotateguild(ctx, delay: float = 2.0):
     global guild_rotation_task, guild_rotation_delay
-    
+
     if guild_rotation_task and not guild_rotation_task.cancelled():
         await ctx.send(f"```ansi\n{red} XLEGACY | GUILD ROTATION ALREADY RUNNING |  {reset}\n```")
         return
-        
+
     if delay < 1.0:
         await ctx.send(f"```ansi\n{red} XLEGACY | DELAY MUST BE AT LEAST 1 SECOND |  {reset}\n```")
         return
-        
+
     guild_rotation_delay = delay
-    
+
     async def rotate_guilds():
         headers = {
             "authority": "canary.discord.com",
@@ -4588,12 +4914,12 @@ async def rotateguild(ctx, delay: float = 2.0):
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "x-super-properties": "eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzEyMC4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTIwLjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiIiLCJyZWZlcnJpbmdfZG9tYWluIjoiIiwicmVmZXJyZXJfY3VycmVudCI6IiIsInJlZmVycmluZ19kb21haW5fY3VycmVudCI6IiIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjI1MDgzNiwiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbH0="
         }
-        
+
         while True:
             try:
                 async with aiohttp.ClientSession() as session:
                     valid_guild_ids = []
-                    
+
                     async with session.get(
                         'https://canary.discord.com/api/v9/users/@me/guilds',
                         headers=headers
@@ -4601,15 +4927,15 @@ async def rotateguild(ctx, delay: float = 2.0):
                         if guild_resp.status != 200:
                             await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO FETCH GUILDS |  {reset}\n```")
                             return
-                        
+
                         guilds = await guild_resp.json()
-                        
+
                         for guild in guilds:
                             test_payload = {
                                 'identity_guild_id': guild['id'],
                                 'identity_enabled': True
                             }
-                            
+
                             async with session.put(
                                 'https://canary.discord.com/api/v9/users/@me/clan',
                                 headers=headers,
@@ -4617,13 +4943,13 @@ async def rotateguild(ctx, delay: float = 2.0):
                             ) as test_resp:
                                 if test_resp.status == 200:
                                     valid_guild_ids.append(guild['id'])
-                        
+
                         if not valid_guild_ids:
                             await ctx.send(f"```ansi\n{red} XLEGACY | NO GUILDS WITH VALID CLAN BADGES |  {reset}\n```")
                             return
-                            
+
                         await ctx.send(f"```ansi\n{red} XLEGACY | FOUND {len(valid_guild_ids)} VALID GUILDS |  {reset}\n```")
-                        
+
                         while True:
                             for guild_id in valid_guild_ids:
                                 payload = {
@@ -4637,20 +4963,20 @@ async def rotateguild(ctx, delay: float = 2.0):
                                 ) as put_resp:
                                     if put_resp.status == 200:
                                         await asyncio.sleep(guild_rotation_delay)
-                            
+
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 print(f"Error in guild rotation: {e}")
                 await asyncio.sleep(5)
-    
+
     guild_rotation_task = asyncio.create_task(rotate_guilds())
     await ctx.send(f"```ansi\n{red} XLEGACY | GUILD ROTATION STARTED | DELAY: {delay}s |  {reset}\n```")
 
 @rotateguild.command(name="stop")
 async def rotateguild_stop(ctx):    
     global guild_rotation_task
-    
+
     if guild_rotation_task and not guild_rotation_task.cancelled():
         guild_rotation_task.cancel()
         guild_rotation_task = None
@@ -4661,11 +4987,11 @@ async def rotateguild_stop(ctx):
 @rotateguild.command(name="delay")
 async def rotateguild_delay(ctx, delay: float):
     global guild_rotation_delay
-    
+
     if delay < 1.0:
         await ctx.send(f"```ansi\n{red} XLEGACY | DELAY MUST BE AT LEAST 1 SECOND |  {reset}\n```")
         return
-        
+
     guild_rotation_delay = delay
     await ctx.send(f"```ansi\n{red} XLEGACY | GUILD ROTATION DELAY SET | {delay}s |  {reset}\n```")
 
@@ -4781,8 +5107,8 @@ async def gctrap(ctx):
    > < | |    |  __|| | |_ | / /\ \| |      \   /  
   / . \| |____| |___| |__| |/ ____ \ |____   | |   
  /_/ \_\______|______\_____/_/    \_\_____|  |_|   
-                                                  
-                                                  
+
+
 
 """
     await msg.edit(content=f"```ansi\n{help_content}\n```")
@@ -4808,23 +5134,23 @@ async def gctrapconfig(ctx):
 {light_red}Messages Available: {red}{len(self_gcname)}{reset}
 {light_red}Messages:{reset}
 """
-    
+
     for i, msg in enumerate(self_gcname[:5], 1):
         config_info += f"{light_red}[{red}{i}{light_red}] {black}{msg[:50]}...{reset}\n"
-    
+
     if len(self_gcname) > 5:
         config_info += f"{light_red}... and {red}{len(self_gcname) - 5}{light_red} more messages{reset}"
-    
+
     await ctx.send(f"```ansi\n{config_info}\n```")
 
 @bot.command()
 async def ugc(ctx, user: discord.User):
     global ugc_task
-    
+
     if ugc_task is not None:
         await ctx.send(f"```ansi\n{red} XLEGACY | GC NAME CHANGER ALREADY RUNNING |  {reset}\n```")
         return
-        
+
     if not isinstance(ctx.channel, discord.GroupChannel):
         await ctx.send(f"```ansi\n{red} XLEGACY | GROUP CHAT COMMAND ONLY |  {reset}\n```")
         return
@@ -4832,18 +5158,18 @@ async def ugc(ctx, user: discord.User):
     async def name_changer():
         counter = 1
         unused_names = list(self_gcname)
-        
+
         while True:
             try:
                 if not unused_names:
                     unused_names = list(self_gcname)
-                
+
                 base_name = random.choice(unused_names)
                 unused_names.remove(base_name)
-                
+
                 formatted_name = base_name.replace("{user}", user.name).replace("{UPuser}", user.name.upper())
                 new_name = f"{formatted_name} {counter}"
-                
+
                 await ctx.channel._state.http.request(
                     discord.http.Route(
                         'PATCH',
@@ -4852,10 +5178,10 @@ async def ugc(ctx, user: discord.User):
                     ),
                     json={'name': new_name}
                 )
-                
+
                 await asyncio.sleep(0.1)
                 counter += 1
-                
+
             except discord.HTTPException as e:
                 if e.code == 429:
                     retry_after = e.retry_after if hasattr(e, 'retry_after') else 1
@@ -4876,11 +5202,11 @@ async def ugc(ctx, user: discord.User):
 @bot.command()
 async def ugcend(ctx):
     global ugc_task
-    
+
     if ugc_task is None:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO GC NAME CHANGER RUNNING |  {reset}\n```")
         return
-        
+
     ugc_task.cancel()
     ugc_task = None
     await ctx.send(f"```ansi\n{red} XLEGACY | GC NAME CHANGER STOPPED |  {reset}\n```")
@@ -4890,10 +5216,10 @@ async def tleave(ctx, server_id: str = None):
     if not server_id:
         await ctx.send(f"```ansi\n{red} XLEGACY | PROVIDE SERVER ID |  {reset}\n```")
         return
-        
+
     tokens = load_tokens()
     total_tokens = len(tokens)
-    
+
     status_msg = await ctx.send(f"```ansi\n{red} XLEGACY | TOKEN SERVER LEAVE | TOKENS: {total_tokens} |  {reset}\n```")
 
     def check(m):
@@ -4902,7 +5228,7 @@ async def tleave(ctx, server_id: str = None):
     try:
         amount_msg = await bot.wait_for('message', timeout=20.0, check=check)
         amount = amount_msg.content.lower()
-        
+
         if amount == 'all':
             selected_tokens = tokens
         else:
@@ -4919,7 +5245,7 @@ async def tleave(ctx, server_id: str = None):
         success = 0
         failed = 0
         ratelimited = 0
-        
+
         async with aiohttp.ClientSession() as session:
             for i, token in enumerate(selected_tokens, 1):
                 headers = {
@@ -4943,7 +5269,7 @@ async def tleave(ctx, server_id: str = None):
                     'x-discord-timezone': 'America/New_York',
                     'x-super-properties': 'eyJvcyI6IldpbmRvd3MiLCJicm93c2VyIjoiQ2hyb21lIiwiZGV2aWNlIjoiIiwic3lzdGVtX2xvY2FsZSI6ImVuLVVTIiwiYnJvd3Nlcl91c2VyX2FnZW50IjoiTW96aWxsYS81LjAgKFdpbmRvd3MgTlQgMTAuMDsgV2luNjQ7IHg2NCkgQXBwbGVXZWJLaXQvNTM3LjM2IChLSFRNTCwgbGlrZSBHZWNrbykgQ2hyb21lLzEzMS4wLjAuMCBTYWZhcmkvNTM3LjM2IiwiYnJvd3Nlcl92ZXJzaW9uIjoiMTMxLjAuMC4wIiwib3NfdmVyc2lvbiI6IjEwIiwicmVmZXJyZXIiOiJodHRwczovL3NlYXJjaC5icmF2ZS5jb20vIiwicmVmZXJyaW5nX2RvbWFpbiI6InNlYXJjaC5icmF2ZS5jb20iLCJyZWZlcnJlcl9jdXJyZW50IjoiaHR0cHM6Ly9kaXNjb3JkLmNvbS8iLCJyZWZlcnJpbmdfZG9tYWluX2N1cnJlbnQiOiJkaXNjb3JkLmNvbSIsInJlbGVhc2VfY2hhbm5lbCI6InN0YWJsZSIsImNsaWVudF9idWlsZF9udW1iZXIiOjM0NzY5OSwiY2xpZW50X2V2ZW50X3NvdXJjZSI6bnVsbH0='
                 }
-                
+
                 try:
                     async with session.delete(
                         f'https://discord.com/api/v9/users/@me/guilds/{server_id}',
@@ -4951,7 +5277,7 @@ async def tleave(ctx, server_id: str = None):
                         json={"lurking": False}  
                     ) as resp:
                         response_data = await resp.text()
-                        
+
                         if resp.status in [204, 200]:  
                             success += 1
                         elif resp.status == 429:  
@@ -4962,7 +5288,7 @@ async def tleave(ctx, server_id: str = None):
                             continue
                         else:
                             failed += 1
-                        
+
                         progress = fr"""```ansi
 {red} TOKEN SERVER LEAVE PROGRESS {reset}
 {light_red}Progress: {red}{i}/{len(selected_tokens)} {light_red}({red}{(i/len(selected_tokens)*100):.1f}%{light_red}){reset}
@@ -4971,7 +5297,7 @@ async def tleave(ctx, server_id: str = None):
 {light_red}Rate Limited: {red}{ratelimited}{reset}```"""
                         await status_msg.edit(content=progress)
                         await asyncio.sleep(1)   
-                        
+
                 except Exception as e:
                     failed += 1
                     continue
@@ -5023,13 +5349,13 @@ async def chatpack(ctx):
 @bot.command()
 async def rape(ctx, user: discord.User):
     channel_id = ctx.channel.id
-    
+
     if (user.id, channel_id) in rape_running:
         await ctx.send(f"```ansi\n{red} XLEGACY | RAPE ALREADY RUNNING FOR USER |  {reset}\n```")
         return
-        
+
     rape_running[(user.id, channel_id)] = True
-    
+
     async def rape_loop():
         messages = load_outlast_messages()
         if not messages:
@@ -5045,7 +5371,7 @@ async def rape(ctx, user: discord.User):
                 print(f"Error in rape loop: {e}")
                 await asyncio.sleep(1)
                 continue
-                
+
     task = asyncio.create_task(rape_loop())
     rape_tasks[(user.id, channel_id)] = task
     await ctx.send(f"```ansi\n{red} XLEGACY | RAPE STARTED | {user.name}  DONT FOLD BC I WONT DIE |  {reset}\n```")
@@ -5053,7 +5379,7 @@ async def rape(ctx, user: discord.User):
 @bot.command()
 async def rapeoff(ctx, user: discord.User = None):
     channel_id = ctx.channel.id
-    
+
     if user:
         # Stop specific user
         if (user.id, channel_id) in rape_running:
@@ -5074,7 +5400,7 @@ async def rapeoff(ctx, user: discord.User = None):
                 if task:
                     task.cancel()
                 stopped = True
-                
+
         if stopped:
             await ctx.send(f"```ansi\n{red} XLEGACY | AWE YOU GOT RAPED SO HARD THE POLICE CAME TO STOP ME |  {reset}\n```")
         else:
@@ -5130,7 +5456,7 @@ async def ar(ctx, user: discord.User):
 async def arend(ctx):
     channel_id = ctx.channel.id
     tasks_to_stop = [key for key in autoreply_tasks.keys() if key[1] == channel_id]
-    
+
     if tasks_to_stop:
         for user_id in tasks_to_stop:
             task = autoreply_tasks.pop(user_id)
@@ -5142,14 +5468,14 @@ async def arend(ctx):
 @bot.command()
 async def arm(ctx, user: discord.User):
     channel_id = ctx.channel.id
-    
+
     all_tokens = load_tokens()
     if not all_tokens:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
         return
 
     await ctx.send(f"```ansi\n{red} XLEGACY | HOW MANY TOKENS TO USE? (1-{len(all_tokens)}) OR 'ALL' |  {reset}\n```")
-    
+
     def check(m):
         return m.author == ctx.author and m.channel == ctx.channel
 
@@ -5240,7 +5566,7 @@ async def arm(ctx, user: discord.User):
 async def armend(ctx):
     channel_id = ctx.channel.id
     tasks_to_stop = [key for key in arm_tasks.keys() if key[1] == channel_id]
-    
+
     if tasks_to_stop:
         for user_id in tasks_to_stop:
             task = arm_tasks.pop(user_id)
@@ -5333,7 +5659,7 @@ async def kill(ctx, user_id: str):
                     tasks.append(task)
 
                 results = await asyncio.gather(*tasks)
-                
+
                 if not all(results):
                     await asyncio.sleep(2.0)  
                 else:
@@ -5350,7 +5676,7 @@ async def kill(ctx, user_id: str):
 async def killend(ctx):
     channel_id = ctx.channel.id
     tasks_to_stop = [key for key in kill_tasks.keys() if key[1] == channel_id]
-    
+
     if tasks_to_stop:
         for user_id in tasks_to_stop:
             task = kill_tasks.pop(user_id)
@@ -5426,7 +5752,7 @@ async def gcfill(ctx):
     async def add_token_to_gc(token):
         try:
             user_client = discord.Client(intents=discord.Intents.default())
-            
+
             @user_client.event
             async def on_ready():
                 try:
@@ -5438,23 +5764,23 @@ async def gcfill(ctx):
                     await user_client.close()
 
             await user_client.start(token, bot=False)
-            
+
         except Exception as e:
             print(f"Failed to process token {token[-4:]}: {e}")
 
     tasks = [add_token_to_gc(token) for token in limited_tokens]
     await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     await ctx.send(f"```ansi\n{red} XLEGACY | ADDED {len(limited_tokens)} TOKENS TO GROUP CHAT |  {reset}\n```")
 
 @bot.command()
 async def gcleave(ctx):
     tokens = load_tokens()
-    
+
     if not tokens:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
         return
-        
+
     channel_id = ctx.channel.id
 
     async def leave_gc(token):
@@ -5462,7 +5788,7 @@ async def gcleave(ctx):
             'Authorization': token,
             'Content-Type': 'application/json'
         }
-        
+
         async with aiohttp.ClientSession() as session:
             try:
                 url = f'https://discord.com/api/v9/channels/{channel_id}'
@@ -5475,21 +5801,21 @@ async def gcleave(ctx):
                         await asyncio.sleep(retry_after)
                     else:
                         print(f"Error for token {token[-4:]}: Status {response.status}")
-                        
+
             except Exception as e:
                 print(f"Failed to process token {token[-4:]}: {e}")
-            
+
             await asyncio.sleep(0.5) 
 
     tasks = [leave_gc(token) for token in tokens]
     await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     await ctx.send(f"```ansi\n{red} XLEGACY | ALL TOKENS LEFT GROUP CHAT |  {reset}\n```")
 
 @bot.command()
 async def gcleaveall(ctx):
     tokens = load_tokens()
-    
+
     if not tokens:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
         return
@@ -5500,7 +5826,7 @@ async def gcleaveall(ctx):
             'Content-Type': 'application/json',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
-        
+
         left_count = 0
         async with aiohttp.ClientSession() as session:
             try:
@@ -5508,7 +5834,7 @@ async def gcleaveall(ctx):
                     if resp.status == 200:
                         channels = await resp.json()
                         group_channels = [channel for channel in channels if channel.get('type') == 3]
-                        
+
                         for channel in group_channels:
                             try:
                                 channel_id = channel['id']
@@ -5522,40 +5848,40 @@ async def gcleaveall(ctx):
                                         await asyncio.sleep(retry_after)
                                     else:
                                         print(f"Error leaving GC {channel_id} for token {token[-4:]}: Status {leave_resp.status}")
-                                
+
                                 await asyncio.sleep(0.5)  
-                                
+
                             except Exception as e:
                                 print(f"Error processing channel for token {token[-4:]}: {e}")
                                 continue
-                                
+
                         return left_count
                     else:
                         print(f"Failed to get channels for token {token[-4:]}: Status {resp.status}")
                         return 0
-                        
+
             except Exception as e:
                 print(f"Failed to process token {token[-4:]}: {e}")
                 return 0
 
     status_msg = await ctx.send(f"```ansi\n{red} XLEGACY | LEAVING ALL GROUP CHATS |  {reset}\n```")
-    
+
     tasks = [leave_all_gcs(token) for token in tokens]
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     total_left = sum(r for r in results if isinstance(r, int))
-    
+
     await status_msg.edit(content=f"```ansi\n{red} XLEGACY | LEFT {total_left} GROUP CHATS | {len(tokens)} TOKENS |  {reset}\n```")
 
 @bot.command()
 async def rpcall(ctx, *, message: str):  
     messages = message.split(', ')  
     tokens = load_tokens()
-    
+
     if not tokens:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
         return
-        
+
     async def update_presence(token, details):
         if token.strip() == "":
             return
@@ -5594,7 +5920,7 @@ bye = fr"""
    > < | |    |  __|| | |_ | / /\ \| |      \   /  
   / . \| |____| |___| |__| |/ ____ \ |____   | |   
  /_/ \_\______|______\_____/_/    \_\_____|  |_|   
- 
+
  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀{red}Restarting Selfbot⠀⠀⠀
 {cyan}─────────────────────────────────────────────────────────────────────────────────────────────────────────────
 """
@@ -5668,7 +5994,7 @@ async def mreact(ctx, emoji: str, user: discord.Member):
         return
 
     await ctx.send(f"```ansi\n{red} XLEGACY | FOUND {len(active_tokens)} ACTIVE TOKENS | CHOOSE HOW MANY TO USE |  {reset}\n```")
-    
+
     def check(m):
         return m.author == ctx.author and m.channel == ctx.channel
 
@@ -5740,14 +6066,14 @@ async def mreact(ctx, emoji: str, user: discord.Member):
 
     reactm_running[(user_id, channel_id)] = True
     tasks = []
-    
+
     for token in tokens:
         task = asyncio.create_task(reaction_task(token))
         tasks.append(task)
         active_reaction_tasks.append(task)
-    
+
     reactm_tasks[(user_id, channel_id)] = tasks
-    
+
     await ctx.send(f"```ansi\n{red} XLEGACY | REACTING WITH {emoji} TO {user.name} USING {len(tokens)} TOKENS |  {reset}\n```")
 @bot.command()
 async def mreactoff(ctx):
@@ -5820,7 +6146,7 @@ async def reset_cmd(ctx):
     """Reset the selfbot - clear console and reload everything"""
     import os
     import sys
-    
+
     # Send reset message
     reset_message = fr"""```ansi
 {red}
@@ -5830,22 +6156,22 @@ async def reset_cmd(ctx):
    > < | |    |  __|| | |_ | / /\\ \\| |      \\   /  
   / . \\| |____| |___| |__| |/ ____ \\ |____   | |   
  /_/ \\_\\______|______\\_____/_/    \\_\\_____|  |_|   
- 
+
  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀{red}Resetting Selfbot⠀⠀⠀
 {light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────
 {red}Clearing console and reloading all modules...
 {light_red}This may take a few seconds...{reset}
 ```"""
-    
+
     try:
         msg = await ctx.send(reset_message)
-        
+
         # Clear all running tasks
         await cleanup_tasks()
-        
+
         # Wait a moment
         await asyncio.sleep(2)
-        
+
         # Update message
         await msg.edit(content=f"""```ansi
 {red}
@@ -5855,20 +6181,20 @@ async def reset_cmd(ctx):
    > < | |    |  __|| | |_ | / /\\ \\| |      \\   /  
   / . \\| |____| |___| |__| |/ ____ \\ |____   | |   
  /_/ \\_\\______|______\\_____/_/    \\_\\_____|  |_|   
- 
+
  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀{red}Restarting...⠀⠀⠀
 {light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────
 {red}Clearing console...
 {green}Reloading modules...
 {light_red}Please wait...{reset}
 ```""")
-        
+
         # Clear console based on OS
         await clear_console()
-        
+
         # Restart the bot
         await restart_bot()
-        
+
     except Exception as e:
         await ctx.send(f"```ansi\n{red} XLEGACY | RESET FAILED | ERROR: {str(e)} |  {reset}\n```")
 
@@ -5876,58 +6202,58 @@ async def cleanup_tasks():
     """Clean up all running tasks"""
     global outlast_running, multilast_running, spammings, spammingss
     global gc_tasks, kill_tasks, autoreply_tasks, arm_tasks, reactm_running
-    
+
     # Stop all running flags
     outlast_running = False
     multilast_running = False
     spammings = False
     spammingss = False
-    
+
     # Cancel all tasks
     tasks_to_cancel = []
-    
+
     # Outlast tasks
     for task in outlast_tasks.values():
         tasks_to_cancel.append(task)
     outlast_tasks.clear()
-    
+
     # Multilast tasks
     for task in multilast_tasks.values():
         tasks_to_cancel.append(task)
     multilast_tasks.clear()
-    
+
     # GC tasks
     for task in gc_tasks.values():
         tasks_to_cancel.append(task)
     gc_tasks.clear()
-    
+
     # Kill tasks
     for task in kill_tasks.values():
         tasks_to_cancel.append(task)
     kill_tasks.clear()
-    
+
     # Autoreply tasks
     for task in autoreply_tasks.values():
         tasks_to_cancel.append(task)
     autoreply_tasks.clear()
-    
+
     # Arm tasks
     for task in arm_tasks.values():
         tasks_to_cancel.append(task)
     arm_tasks.clear()
-    
+
     # Reaction tasks
     for task in active_reaction_tasks:
         tasks_to_cancel.append(task)
     active_reaction_tasks.clear()
-    
+
     # Reactm tasks
     for task_list in reactm_tasks.values():
         for task in task_list:
             tasks_to_cancel.append(task)
     reactm_tasks.clear()
     reactm_running.clear()
-    
+
     # Cancel all tasks
     for task in tasks_to_cancel:
         try:
@@ -5950,15 +6276,15 @@ async def restart_bot():
     """Restart the bot process"""
     try:
         print(f"{red}Restarting selfbot...{reset}")
-        
+
         # Reload critical modules
         import importlib
         import discord
         import aiohttp
-        
+
         # Reload modules that might have been modified
         modules_to_reload = ['discord', 'discord.ext.commands', 'aiohttp', 'asyncio']
-        
+
         for module_name in modules_to_reload:
             try:
                 if module_name in sys.modules:
@@ -5966,19 +6292,19 @@ async def restart_bot():
                     print(f"{green}Reloaded {module_name}{reset}")
             except Exception as e:
                 print(f"{light_red}Failed to reload {module_name}: {e}{reset}")
-        
+
         # Wait a moment for cleanup
         await asyncio.sleep(1)
-        
+
         # Re-import and re-initialize
         print(f"{red}Reinitializing bot...{reset}")
-        
+
         # This will effectively restart the bot by re-running the on_ready event
         # and re-establishing all connections
-        
+
         print(f"{green}Selfbot reset complete!{reset}")
         print(f"{light_red}All tasks stopped, console cleared, and modules reloaded.{reset}")
-        
+
     except Exception as e:
         print(f"{light_red}Error during restart: {e}{reset}")
         # Fallback: restart the entire script
@@ -5992,7 +6318,7 @@ async def hardreset(ctx):
     """Hard reset - completely restart the Python process"""
     import os
     import sys
-    
+
     await ctx.send(f"""```ansi
 {red}
  __   ___      ______ _____          _______     __
@@ -6001,15 +6327,15 @@ async def hardreset(ctx):
    > < | |    |  __|| | |_ | / /\\ \\| |      \\   /  
   / . \\| |____| |___| |__| |/ ____ \\ |____   | |   
  /_/ \\_\\______|______\\_____/_/    \\_\\_____|  |_|   
- 
+
  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀{red}HARD RESET INITIATED⠀⠀⠀
 {light_red}─────────────────────────────────────────────────────────────────────────────────────────────────────────────
 {red}Completely restarting Python process...
 {light_red}This will take a moment...{reset}
 """)
-    
+
     await asyncio.sleep(2)
-    
+
     # Hard restart - completely new process
     os.execv(sys.executable, ['python'] + sys.argv)
 
@@ -6017,14 +6343,14 @@ async def hardreset(ctx):
 async def theme(ctx, theme_name: str = None):
     """Change the color theme of the selfbot"""
     global current_theme
-    
+
     if theme_name is None:
         # Show available themes
         theme_list = []
         for theme_key, theme_data in themes.items():
             current_indicator = " ← CURRENT" if theme_key == current_theme else ""
             theme_list.append(f"{theme_secondary}[ {theme_primary}{theme_key}{theme_secondary} ] {theme_accent}{theme_data['name']}{current_indicator}{reset}")
-        
+
         theme_message = fr"""
 {theme_primary} AVAILABLE THEMES {reset}
 {theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
@@ -6037,9 +6363,9 @@ async def theme(ctx, theme_name: str = None):
 """
         await ctx.send(f"```ansi\n{theme_message}\n```")
         return
-    
+
     theme_name = theme_name.lower()
-    
+
     if theme_name in themes:
         if update_theme(theme_name):
             success_message = fr"""
@@ -6136,11 +6462,11 @@ theme_accent = black
 def update_theme(theme_name):
     """Update the current theme colors"""
     global current_theme, theme_primary, theme_secondary, theme_accent, red, light_red, black, accent_color
-    
+
     if theme_name in themes:
         current_theme = theme_name
         theme_data = themes[theme_name]
-        
+
         theme_primary = theme_data["primary"]
         theme_secondary = theme_data["secondary"] 
         theme_accent = theme_data["accent"]
@@ -6154,21 +6480,21 @@ def update_theme(theme_name):
             accent_color = theme_accent
         except Exception:
             pass
-        
+
         # Save theme preference
         try:
             with open('theme_config.json', 'w') as f:
                 json.dump({"theme": theme_name}, f)
         except:
             pass
-            
+
         return True
     return False
 
 def load_theme():
     """Load saved theme preference"""
     global current_theme, theme_primary, theme_secondary, theme_accent
-    
+
     try:
         with open('theme_config.json', 'r') as f:
             config = json.load(f)
@@ -6193,7 +6519,7 @@ def format_with_theme(text):
 async def prefix(ctx, new_prefix: str = None):
     """Change the bot's command prefix"""
     global PREFIX
-    
+
     if new_prefix is None:
         # Show current prefix and usage
         prefix_info = fr"""
@@ -6226,24 +6552,24 @@ async def prefix(ctx, new_prefix: str = None):
 """
         await ctx.send(f"```ansi\n{prefix_info}\n```")
         return
-    
+
     # Validate new prefix
     if len(new_prefix) > 3:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | PREFIX TOO LONG | MAX 3 CHARACTERS |  {reset}\n```")
         return
-    
+
     if ' ' in new_prefix:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | PREFIX CANNOT CONTAIN SPACES |  {reset}\n```")
         return
-    
+
     # Save new prefix
     old_prefix = PREFIX
     PREFIX = new_prefix
-    
+
     if save_prefix(new_prefix):
         # Update bot command prefix
         bot.command_prefix = PREFIX
-        
+
         success_message = fr"""
 {theme_primary} PREFIX UPDATED {reset}
 {theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
@@ -6271,13 +6597,13 @@ async def prefix(ctx, new_prefix: str = None):
 async def prefixreset(ctx):
     """Reset prefix to default (.)"""
     global PREFIX
-    
+
     old_prefix = PREFIX
     PREFIX = "."
-    
+
     if save_prefix("."):
         bot.command_prefix = PREFIX
-        
+
         reset_message = fr"""
 {theme_primary} PREFIX RESET {reset}
 {theme_secondary}─────────────────────────────────────────────────────────────────────────────────────────────────────────────{reset}
@@ -6301,7 +6627,7 @@ async def prefixreset(ctx):
 async def tstatus(ctx, *, status_text: str = None):
     tokens = load_tokens()
     total_tokens = len(tokens)
-    
+
     if not status_text:
         await ctx.send(f"```{theme_primary}Please provide a status text{reset}```")
         return
@@ -6317,7 +6643,7 @@ How many tokens do you want to use? (Type 'all' or enter a number)```""")
     try:
         amount_msg = await bot.wait_for('message', timeout=20.0, check=check)
         amount = amount_msg.content.lower()
-        
+
         if amount == 'all':
             selected_tokens = tokens
         else:
@@ -6332,21 +6658,21 @@ How many tokens do you want to use? (Type 'all' or enter a number)```""")
                 return
 
         success = 0
-        
+
         async with aiohttp.ClientSession() as session:
             for i, token in enumerate(selected_tokens, 1):
                 try:
                     online_data = {
                         'status': 'online'
                     }
-                    
+
                     status_data = {
                         'custom_status': {
                             'text': status_text
                         },
                         'status': 'online'  
                     }
-                    
+
                     async with session.patch(
                         'https://discord.com/api/v9/users/@me/settings',
                         headers={
@@ -6355,7 +6681,7 @@ How many tokens do you want to use? (Type 'all' or enter a number)```""")
                         },
                         json=online_data
                     ) as resp1:
-                        
+
                         async with session.patch(
                             'https://discord.com/api/v9/users/@me/settings',
                             headers={
@@ -6366,7 +6692,7 @@ How many tokens do you want to use? (Type 'all' or enter a number)```""")
                         ) as resp2:
                             if resp1.status == 200 and resp2.status == 200:
                                 success += 1
-                            
+
                             progress = fr"""```ansi
 {theme_primary}Changing Statuses...{reset}
 Progress: {i}/{len(selected_tokens)} ({(i/len(selected_tokens)*100):.1f}%)
@@ -6391,7 +6717,7 @@ Successfully changed: {success}/{len(selected_tokens)} statuses to: {status_text
 async def tstatusoff(ctx):
     tokens = load_tokens()
     total_tokens = len(tokens)
-    
+
     status_msg = await ctx.send(f"""```ansi
 {theme_primary}Token Status Reset{reset}
 Total tokens available: {total_tokens}
@@ -6403,7 +6729,7 @@ How many tokens do you want to reset? (Type 'all' or enter a number)```""")
     try:
         amount_msg = await bot.wait_for('message', timeout=20.0, check=check)
         amount = amount_msg.content.lower()
-        
+
         if amount == 'all':
             selected_tokens = tokens
         else:
@@ -6418,7 +6744,7 @@ How many tokens do you want to reset? (Type 'all' or enter a number)```""")
                 return
 
         success = 0
-        
+
         async with aiohttp.ClientSession() as session:
             for i, token in enumerate(selected_tokens, 1):
                 try:
@@ -6426,7 +6752,7 @@ How many tokens do you want to reset? (Type 'all' or enter a number)```""")
                         'custom_status': None,
                         'status': 'online' 
                     }
-                    
+
                     async with session.patch(
                         'https://discord.com/api/v9/users/@me/settings',
                         headers={
@@ -6437,7 +6763,7 @@ How many tokens do you want to reset? (Type 'all' or enter a number)```""")
                     ) as resp:
                         if resp.status == 200:
                             success += 1
-                        
+
                         progress = fr"""```ansi
 {theme_primary}Resetting Statuses...{reset}
 Progress: {i}/{len(selected_tokens)} ({(i/len(selected_tokens)*100):.1f}%)
@@ -6461,7 +6787,7 @@ Successfully reset: {success}/{len(selected_tokens)} statuses```""")
 async def tinfo(ctx, token_input: str):
     """Get token account information"""
     tokens = load_tokens()
-    
+
     try:
         index = int(token_input) - 1
         if 0 <= index < len(tokens):
@@ -6489,9 +6815,9 @@ async def tinfo(ctx, token_input: str):
                 if resp.status != 200:
                     await status_msg.edit(content=f"```{theme_primary}Failed to fetch token information{reset}```")
                     return
-                
+
                 user_data = await resp.json()
-                
+
                 async with session.get(
                     'https://discord.com/api/v9/users/@me/connections',
                     headers={
@@ -6554,14 +6880,14 @@ async def tstream(ctx, *, statuses_list: str = None):
     """Multi-token streaming status rotation"""
     tokens = load_tokens()
     total_tokens = len(tokens)
-    
+
     if not statuses_list:
         await ctx.send(f"```{theme_primary}Please provide statuses | .tstream status1, status2, status3{reset}```")
         return
 
     # Parse statuses
     statuses = [status.strip() for status in statuses_list.split(',') if status.strip()]
-    
+
     if not statuses:
         await ctx.send(f"```{theme_primary}No valid statuses provided{reset}```")
         return
@@ -6577,7 +6903,7 @@ How many tokens do you want to use? (Type 'all' or enter a number)```""")
     try:
         amount_msg = await bot.wait_for('message', timeout=20.0, check=check)
         amount = amount_msg.content.lower()
-        
+
         if amount == 'all':
             selected_tokens = tokens
         else:
@@ -6593,28 +6919,28 @@ How many tokens do you want to use? (Type 'all' or enter a number)```""")
 
         # Start streaming for all selected tokens
         streaming_tasks = []
-        
+
         async def token_stream_loop(token, token_index):
             current_status_index = 0
             success_count = 0
-            
+
             while True:
                 try:
                     status_text = statuses[current_status_index % len(statuses)]
-                    
+
                     # Set streaming activity for this token
                     headers = {
                         'Authorization': token,
                         'Content-Type': 'application/json'
                     }
-                    
+
                     # Set custom status with streaming
                     status_data = {
                         'custom_status': {
                             'text': status_text
                         }
                     }
-                    
+
                     async with aiohttp.ClientSession() as session:
                         async with session.patch(
                             'https://discord.com/api/v9/users/@me/settings',
@@ -6623,7 +6949,7 @@ How many tokens do you want to use? (Type 'all' or enter a number)```""")
                         ) as resp:
                             if resp.status == 200:
                                 success_count += 1
-                    
+
                     # Update progress for this token
                     progress = fr"""```ansi
 {theme_primary}Token Streaming Status{reset}
@@ -6633,13 +6959,13 @@ Current: {status_text}
 Success: {success_count} updates
 
 {theme_secondary}Streaming rotation active...{reset}```"""
-                    
+
                     await status_msg.edit(content=progress)
-                    
+
                     # Rotate to next status
                     current_status_index += 1
                     await asyncio.sleep(8)  # Change status every 8 seconds
-                    
+
                 except Exception as e:
                     print(f"Error in token {token_index} stream: {e}")
                     await asyncio.sleep(5)
@@ -6684,7 +7010,7 @@ async def tss(ctx):
         await ctx.send(f"```{theme_primary}Token Streaming Status: {active_tasks}/{len(tasks)} tokens active{reset}```")
     else:
         await ctx.send(f"```{theme_primary}No token streaming active{reset}```")
-      
+
 @bot.command()
 async def hostton(ctx, token: str):
     """Host a token in a separate selfbot instance"""
@@ -6693,17 +7019,17 @@ async def hostton(ctx, token: str):
         if not token or len(token) < 10:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Invalid token format | {reset}\n```")
             return
-        
+
         current_dir = os.getcwd()
         xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
-        
+
         # Create directory if it doesn't exist
         try:
             os.makedirs(xlegacy_host_path, exist_ok=True)
         except Exception as e:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot create directory: {str(e)} | {reset}\n```")
             return
-        
+
         # First, get the username from the token to name the file
         async def get_username(token):
             headers = {
@@ -6729,17 +7055,17 @@ async def hostton(ctx, token: str):
             except Exception as e:
                 await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Network Error | {str(e)} | {reset}\n```", delete_after=5)
                 return "unknown"
-        
+
         # Get username for the file name
         username = await get_username(token)
         if username == "unknown":
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot validate token | {reset}\n```")
             return
-        
+
         safe_username = "".join(c for c in username if c.isalnum() or c in (' ', '-', '_')).rstrip()
         if not safe_username:
             safe_username = "hosted_bot"
-        
+
         # Create user folder
         user_folder = os.path.join(xlegacy_host_path, safe_username)
         try:
@@ -6747,10 +7073,10 @@ async def hostton(ctx, token: str):
         except Exception as e:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot create user folder: {str(e)} | {reset}\n```")
             return
-        
+
         config_path = os.path.join(user_folder, "config.json")
         bot_file_path = os.path.join(user_folder, "bot.py")
-        
+
         # Create config file with both TOKEN and token keys for compatibility
         config = {
             "token": token,
@@ -6762,7 +7088,7 @@ async def hostton(ctx, token: str):
         except Exception as e:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot write config: {str(e)} | {reset}\n```")
             return
-        
+
         # Store hosted bot info for auto-start
         hosted_bots_file = os.path.join(xlegacy_host_path, "hosted_bots.json")
         hosted_bots = {}
@@ -6772,7 +7098,7 @@ async def hostton(ctx, token: str):
                     hosted_bots = json.load(f)
             except Exception as e:
                 await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Warning | Cannot read hosted_bots.json: {str(e)} | {reset}\n```", delete_after=5)
-        
+
         # Add this bot to hosted bots list
         import time
         hosted_bots[safe_username] = {
@@ -6781,14 +7107,14 @@ async def hostton(ctx, token: str):
             "token": token,
             "added_time": time.time()
         }
-        
+
         # Save hosted bots list
         try:
             with open(hosted_bots_file, 'w', encoding='utf-8') as f:
                 json.dump(hosted_bots, f, indent=4)
         except Exception as e:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Warning | Cannot save hosted_bots.json: {str(e)} | {reset}\n```", delete_after=5)
-        
+
         # Load bot code from GitHub and modify it for hosted environment
         async def download_and_modify_bot_code():
             github_url = "https://raw.githubusercontent.com/jayden-so/Xlegacy-client/refs/heads/main/main.py"
@@ -6797,12 +7123,12 @@ async def hostton(ctx, token: str):
                     async with session.get(github_url, timeout=aiohttp.ClientTimeout(total=15)) as response:
                         if response.status == 200:
                             content = await response.text()
-                            
+
                             # REMOVE ALL EXISTING USER_FOLDER ASSIGNMENTS FIRST
                             import re
                             # Remove any existing USER_FOLDER assignments
                             content = re.sub(r'USER_FOLDER\s*=\s*[^\n]+\n', '', content)
-                            
+
                             # MODIFY THE DOWNLOADED CODE FOR HOSTED ENVIRONMENT
                             path_fix_code = f'''
 import os
@@ -6817,11 +7143,11 @@ sys.path.insert(0, current_dir)
 USER_FOLDER = "Xlegacy_host/{safe_username}"
 
 '''
-                            
+
                             # Find where the imports start and insert our path fix
                             lines = content.split('\n')
                             new_lines = []
-                            
+
                             # Add our path fix after the imports begin
                             imports_added = False
                             for i, line in enumerate(lines):
@@ -6830,38 +7156,38 @@ USER_FOLDER = "Xlegacy_host/{safe_username}"
                                     if i + 1 < len(lines) and (not lines[i + 1].startswith('import ') and not lines[i + 1].startswith('from ')):
                                         new_lines.append(path_fix_code.strip())
                                         imports_added = True
-                            
+
                             if not imports_added and len(new_lines) > 3:
                                 new_lines.insert(3, path_fix_code.strip())
-                            
+
                             modified_content = '\n'.join(new_lines)
-                            
+
                             # FIX THE TOKEN LOADING
                             modified_content = modified_content.replace(
                                 "token = config['TOKEN']",
                                 "token = config.get('TOKEN') or config.get('token')"
                             )
-                            
+
                             modified_content = modified_content.replace(
                                 'token = config["TOKEN"]',
                                 'token = config.get("TOKEN") or config.get("token")'
                             )
-                            
+
                             modified_content = modified_content.replace(
                                 "config['TOKEN']",
                                 "config.get('TOKEN', config.get('token', ''))"
                             )
-                            
+
                             modified_content = modified_content.replace(
                                 'config["TOKEN"]',
                                 'config.get("TOKEN", config.get("token", ""))'
                             )
-                            
+
                             modified_content = modified_content.replace(
                                 'with open(config_path, \'r\') as f:',
                                 'with open(config_path, \'r\', encoding=\'utf-8\') as f:'
                             )
-                            
+
                             return modified_content
                         else:
                             raise Exception(f"GitHub returned status: {response.status}")
@@ -6869,14 +7195,14 @@ USER_FOLDER = "Xlegacy_host/{safe_username}"
                 raise Exception("GitHub download timed out")
             except Exception as e:
                 raise Exception(f"Network error: {str(e)}")
-        
+
         # Download and modify the bot code
         try:
             bot_code = await download_and_modify_bot_code()
         except Exception as e:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Download Error | {str(e)} | {reset}\n```")
             return
-        
+
         # Write the bot file with UTF-8 encoding
         try:
             with open(bot_file_path, 'w', encoding='utf-8') as f:
@@ -6884,7 +7210,7 @@ USER_FOLDER = "Xlegacy_host/{safe_username}"
         except Exception as e:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot write bot file: {str(e)} | {reset}\n```")
             return
-        
+
         # Start the hosted bot
         try:
             if os.name == 'nt':  # Windows
@@ -6898,7 +7224,7 @@ USER_FOLDER = "Xlegacy_host/{safe_username}"
                     ["python3", bot_file_path],
                     cwd=user_folder
                 )
-            
+
             # Check if process started successfully
             import time
             time.sleep(2)
@@ -6906,31 +7232,31 @@ USER_FOLDER = "Xlegacy_host/{safe_username}"
                 await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Warning | Bot started but closed immediately | {reset}\n```", delete_after=5)
             else:
                 await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Success | Bot running in console | {reset}\n```", delete_after=5)
-            
+
         except Exception as e:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot start bot: {str(e)} | {reset}\n```")
             return
-        
+
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Hosting Token | {username} | {reset}\n```")
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Bot Created | {safe_username} | {reset}\n```")
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Auto-Start Enabled | Ready | {reset}\n```")
-        
+
     except Exception as e:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Critical Error | {str(e)} | {reset}\n```")
-       
+
 @bot.command()
 async def thost(ctx):
     """Host all created bot files in one combined window"""
     try:
 
-        
+
         current_dir = os.getcwd()
         xlegacy_host_path = os.path.join(current_dir, "Xlegacy_host")
-        
+
         if not os.path.exists(xlegacy_host_path):
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | No Hosted Bots | Use .hostton first | {reset}\n```")
             return
-        
+
         # Find all user folders (not individual bot files)
         user_folders = []
         try:
@@ -6944,20 +7270,20 @@ async def thost(ctx):
         except Exception as e:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error | Cannot read directory: {str(e)} | {reset}\n```")
             return
-        
+
         if not user_folders:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | No Bot Folders | Use .hostton first | {reset}\n```")
             return
-        
+
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Starting Combined Host | {len(user_folders)} bots | {reset}\n```")
-        
+
         # Start each hosted bot in its own console
         started_count = 0
         for user_folder in user_folders:
             try:
                 folder_path = os.path.join(xlegacy_host_path, user_folder)
                 bot_file_path = os.path.join(folder_path, "bot.py")
-                
+
                 if os.path.exists(bot_file_path):
                     if os.name == 'nt':  # Windows
                         process = subprocess.Popen(
@@ -6970,7 +7296,7 @@ async def thost(ctx):
                             ["python3", bot_file_path],
                             cwd=folder_path
                         )
-                    
+
                     # Check if process started
                     import time
                     time.sleep(1)
@@ -6979,12 +7305,12 @@ async def thost(ctx):
                         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Started | {user_folder} | {reset}\n```", delete_after=3)
                     else:
                         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Failed to Start | {user_folder} | {reset}\n```", delete_after=3)
-                
+
             except Exception as e:
                 await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Error Starting | {user_folder}: {str(e)} | {reset}\n```", delete_after=3)
-        
+
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY |  Host Complete | {started_count}/{len(user_folders)} started | {reset}\n```")
-        
+
     except Exception as e:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | Critical Error | {str(e)} | {reset}\n```")
 
@@ -7008,49 +7334,49 @@ async def manual_register(ctx, count: int = 1):
         if ctx.author.id != bot.user.id:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | UNAUTHORIZED |  {reset}\n```")
             return
-        
+
         if count > 3:  # Limit to prevent overload
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | MAX 3 ACCOUNTS PER COMMAND |  {reset}\n```")
             return
-        
+
         # Read emails from file
         email_file = "emails.txt"
         token_file = "tokens.txt"
-        
+
         if not os.path.exists(email_file):
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | EMAILS FILE NOT FOUND |  {reset}\n```")
             return
-        
+
         with open(email_file, 'r', encoding='utf-8') as f:
             emails = [line.strip() for line in f if line.strip()]
-        
+
         if len(emails) < count:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NOT ENOUGH EMAILS | NEED {count}, HAVE {len(emails)} |  {reset}\n```")
             return
-        
+
         status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | STARTING AUTOMATED REGISTRATION | {count} ACCOUNTS |  {reset}\n```")
-        
+
         # Run automation in the main event loop
         successful_tokens = await automated_registration_task(ctx, emails[:count], status_msg)
-        
+
         # Final summary
         final_msg = f"```ansi\n{theme_primary} AUTOMATED REGISTRATION COMPLETE {reset}\n{theme_secondary}Successful: {len(successful_tokens)}/{count}{reset}\n{theme_secondary}Tokens saved to: {token_file}{reset}"
-        
+
         if successful_tokens:
             final_msg += f"\n\n{theme_primary}Generated Tokens:{reset}"
             for j, token in enumerate(successful_tokens, 1):
                 final_msg += f"\n{theme_secondary}[{theme_primary}{j}{theme_secondary}] {theme_accent}{token[:25]}...{reset}"
-        
+
         final_msg += "```"
-        
+
         await status_msg.edit(content=final_msg)
-        
+
         # Remove used emails from file
         remaining_emails = emails[len(successful_tokens):]
         with open("emails.txt", "w", encoding="utf-8") as f:
             for email in remaining_emails:
                 f.write(email + "\n")
-        
+
     except Exception as e:
         print(f"{theme_secondary}[AUTOMATION ERROR] {e}{reset}")
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | ERROR: {e} |  {reset}\n```")
@@ -7058,36 +7384,36 @@ async def manual_register(ctx, count: int = 1):
 async def automated_registration_task(ctx, emails, status_msg):
     """Run automated registration for each email"""
     successful_tokens = []
-    
+
     for i, email in enumerate(emails):
         try:
             await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | PROCESSING ACCOUNT {i+1}/{len(emails)} | {email} |  {reset}\n```")
-            
+
             # Run Selenium in a thread to avoid blocking
             token = await asyncio.get_event_loop().run_in_executor(
                 None, 
                 lambda e=email, idx=i: run_selenium_automation(e, idx)
             )
-            
+
             if token:
                 successful_tokens.append(token)
                 # Save token immediately
                 with open("tokens.txt", "a", encoding="utf-8") as f:
                     f.write(f"{token}\n")
-                
+
                 await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | ACCOUNT {i+1} SUCCESS | TOKEN SAVED |  {reset}\n```")
                 print(f"{theme_primary}[SUCCESS] Account {i+1} created: {token[:30]}...{reset}")
             else:
                 await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | ACCOUNT {i+1} FAILED | {email} |  {reset}\n```")
                 print(f"{theme_secondary}[FAILED] Account {i+1} failed: {email}{reset}")
-                
+
             # Wait between registrations
             await asyncio.sleep(5)
-            
+
         except Exception as e:
             print(f"{theme_secondary}[ACCOUNT ERROR {i+1}] {e}{reset}")
             await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | ACCOUNT {i+1} ERROR | {str(e)} |  {reset}\n```")
-    
+
     return successful_tokens
 
 def run_selenium_automation(email, index):
@@ -7096,10 +7422,10 @@ def run_selenium_automation(email, index):
     try:
         # Chrome options for automation with network logging
         chrome_options = Options()
-        
+
         # Enable performance logging for network requests
         chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
-        
+
         # Standard Chrome options
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
@@ -7107,10 +7433,10 @@ def run_selenium_automation(email, index):
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        
+
         # Remove headless for manual CAPTCHA solving
         # chrome_options.add_argument("--headless")  # Keep commented out for manual CAPTCHA
-        
+
         # Initialize driver
         try:
             driver = webdriver.Chrome(options=chrome_options)
@@ -7118,58 +7444,58 @@ def run_selenium_automation(email, index):
             print(f"{theme_secondary}[CHROMEDRIVER ERROR] {e}{reset}")
             print(f"{theme_secondary}[INFO] Make sure chromedriver is installed and in PATH{reset}")
             return None
-            
+
         # Hide automation indicators
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
+
         # Navigate to Discord register page
         print(f"{theme_primary}[BROWSER {index+1}] Opening Discord registration...{reset}")
         driver.get("https://discord.com/register")
-        
+
         # Wait for page to load
         wait = WebDriverWait(driver, 10)
-        
+
         # Generate credentials
         username = f"Xlegacy_{random.randint(100000, 999999)}"
         password = "XLEGACY22"
-        
+
         print(f"{theme_primary}[CREDENTIALS {index+1}] Email: {email} | Username: {username} | Password: {password}{reset}")
-        
+
         # Fill registration form
         try:
             # Wait for and fill email field
             email_field = wait.until(EC.presence_of_element_located((By.NAME, "email")))
             email_field.clear()
             email_field.send_keys(email)
-            
+
             # Fill username field
             username_field = driver.find_element(By.NAME, "username")
             username_field.clear()
             username_field.send_keys(username)
-            
+
             # Fill password field
             password_field = driver.find_element(By.NAME, "password")
             password_field.clear()
             password_field.send_keys(password)
-            
+
             print(f"{theme_primary}[FORM {index+1}] Registration form filled successfully{reset}")
-            
+
         except Exception as e:
             print(f"{theme_secondary}[FORM ERROR {index+1}] Could not fill form: {e}{reset}")
             return None
-        
+
         # Wait for manual CAPTCHA completion
         print(f"{theme_primary}[WAITING {index+1}] Please complete CAPTCHA manually...{reset}")
         print(f"{theme_primary}[INFO {index+1}] Browser will stay open for CAPTCHA completion{reset}")
-        
+
         # Clear any existing logs before waiting for login
         if driver:
             driver.get_log('performance')
-        
+
         # Wait for user to complete CAPTCHA and registration
         logged_in = False
         token = None
-        
+
         for wait_time in range(300):  # Wait up to 5 minutes (300 seconds)
             try:
                 current_url = driver.current_url
@@ -7177,12 +7503,12 @@ def run_selenium_automation(email, index):
                 if "channels" in current_url or "@me" in current_url or "activity" in current_url:
                     logged_in = True
                     print(f"{theme_primary}[SUCCESS {index+1}] Detected successful login{reset}")
-                    
+
                     # Try to extract token from network requests
                     token = extract_token_from_network_logs(driver)
                     if token:
                         break
-                    
+
                     # If no token found yet, try to interact with the page to generate network traffic
                     try:
                         # Wait a bit for initial requests to complete
@@ -7190,54 +7516,54 @@ def run_selenium_automation(email, index):
                         token = extract_token_from_network_logs(driver)
                         if token:
                             break
-                            
+
                         # Try JavaScript extraction as fallback
                         token = extract_token_with_js(driver)
                         if token:
                             break
                     except Exception as e:
                         print(f"{theme_secondary}[INTERACTION ERROR {index+1}] {e}{reset}")
-                    
+
                     break
-                
+
                 # Check for login success indicators
                 if len(driver.find_elements(By.XPATH, "//div[contains(@class, 'application')]")) > 0:
                     logged_in = True
                     print(f"{theme_primary}[SUCCESS {index+1}] Detected app loaded{reset}")
-                    
+
                     # Extract token
                     token = extract_token_from_network_logs(driver)
                     if not token:
                         token = extract_token_with_js(driver)
                     break
-                    
+
             except Exception as e:
                 pass
-            
+
             time.sleep(1)
-            
+
             # Show progress every 30 seconds
             if wait_time % 30 == 0:
                 print(f"{theme_primary}[WAITING {index+1}] Still waiting... {wait_time}s elapsed{reset}")
-        
+
         if not logged_in:
             print(f"{theme_secondary}[TIMEOUT {index+1}] Registration not completed in time{reset}")
             return None
-        
+
         if not token:
             # Final attempt to get token
             print(f"{theme_primary}[FINAL ATTEMPT {index+1}] Trying to extract token...{reset}")
             token = extract_token_from_network_logs(driver)
             if not token:
                 token = extract_token_with_js(driver)
-        
+
         if token:
             print(f"{theme_primary}[TOKEN {index+1}] Successfully extracted token: {token[:30]}...{reset}")
             return token
         else:
             print(f"{theme_secondary}[TOKEN ERROR {index+1}] Could not extract token{reset}")
             return None
-            
+
     except Exception as e:
         print(f"{theme_secondary}[AUTOMATION ERROR {index+1}] {e}{reset}")
         return None
@@ -7250,16 +7576,16 @@ def extract_token_from_network_logs(driver):
     try:
         # Get performance logs
         logs = driver.get_log('performance')
-        
+
         for log_entry in logs:
             try:
                 log_data = json.loads(log_entry['message'])
                 message = log_data.get('message', {})
-                
+
                 if message.get('method') == 'Network.requestWillBeSent':
                     request = message.get('params', {}).get('request', {})
                     headers = request.get('headers', {})
-                    
+
                     # Check for authorization header
                     auth_header = headers.get('Authorization') or headers.get('authorization')
                     if auth_header and auth_header.startswith('Bearer '):
@@ -7267,7 +7593,7 @@ def extract_token_from_network_logs(driver):
                         if len(token) > 50:  # Discord tokens are typically ~59 chars
                             print(f"{theme_primary}[NETWORK TOKEN FOUND] Length: {len(token)}{reset}")
                             return token
-                    
+
                     # Also check for specific Discord API endpoints
                     url = request.get('url', '')
                     if 'discord.com/api' in url and ('messages' in url or 'users' in url or 'channels' in url):
@@ -7277,12 +7603,12 @@ def extract_token_from_network_logs(driver):
                             if len(token) > 50:
                                 print(f"{theme_primary}[API TOKEN FOUND] From: {url}{reset}")
                                 return token
-                                
+
             except Exception as e:
                 continue
-        
+
         return None
-        
+
     except Exception as e:
         print(f"{theme_secondary}[NETWORK EXTRACTION ERROR] {e}{reset}")
         return None
@@ -7304,7 +7630,7 @@ def extract_token_with_js(driver):
             }
             return null;
             """,
-            
+
             # Method 2: Session Storage
             """
             for (let key in window.sessionStorage) {
@@ -7317,7 +7643,7 @@ def extract_token_with_js(driver):
             }
             return null;
             """,
-            
+
             # Method 3: Try to find token in indexedDB (advanced)
             """
             return new Promise((resolve) => {
@@ -7346,7 +7672,7 @@ def extract_token_with_js(driver):
             });
             """
         ]
-        
+
         for script in token_scripts:
             try:
                 # For async scripts (like indexedDB), use execute_async_script
@@ -7354,15 +7680,15 @@ def extract_token_with_js(driver):
                     token = driver.execute_async_script(script)
                 else:
                     token = driver.execute_script(script)
-                    
+
                 if token and len(token) > 50:
                     print(f"{theme_primary}[JS TOKEN EXTRACTED] Length: {len(token)}{reset}")
                     return token
             except Exception as e:
                 continue
-        
+
         return None
-        
+
     except Exception as e:
         print(f"{theme_secondary}[JS EXTRACTION ERROR] {e}{reset}")
         return None
@@ -7375,9 +7701,9 @@ async def test_selenium(ctx):
             None,
             lambda: test_selenium_sync()
         )
-        
+
         await ctx.send(f"```ansi\n{theme_primary} SELENIUM TEST SUCCESSFUL | {result} |  {reset}\n```")
-        
+
     except Exception as e:
         await ctx.send(f"```ansi\n{theme_primary} SELENIUM TEST FAILED | {str(e)} |  {reset}\n```")
 
@@ -7387,7 +7713,7 @@ def test_selenium_sync():
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    
+
     try:
         driver = webdriver.Chrome(options=chrome_options)
         driver.get("https://www.google.com")
@@ -7404,30 +7730,30 @@ async def quick_register(ctx, count: int = 1):
         if count > 2:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | MAX 2 FOR TESTING |  {reset}\n```")
             return
-            
+
         status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | STARTING QUICK REGISTRATION |  {reset}\n```")
-        
+
         with open("emails.txt", "r", encoding="utf-8") as f:
             emails = [line.strip() for line in f if line.strip()]
-        
+
         if not emails:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO EMAILS FOUND |  {reset}\n```")
             return
-            
+
         email = emails[0]
-        
+
         token = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: run_selenium_automation(email, 0)
         )
-        
+
         if token:
             with open("tokens.txt", "a", encoding="utf-8") as f:
                 f.write(token + "\n")
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | SUCCESS | TOKEN SAVED |  {reset}\n```")
         else:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | FAILED | CHECK CONSOLE |  {reset}\n```")
-            
+
     except Exception as e:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | ERROR: {e} |  {reset}\n```")
 
@@ -7482,30 +7808,30 @@ async def tadd(ctx, *, token: str = None):
     if token is None:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | USAGE: .tadd <token> |  {reset}\n```")
         return
-    
+
     # Validate token format (basic check)
     if len(token) < 50:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN FORMAT |  {reset}\n```")
         return
-    
+
     try:
         # Check if token already exists
         existing_tokens = load_tokens()
         if token in existing_tokens:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | TOKEN ALREADY EXISTS |  {reset}\n```")
             return
-        
+
         # Add token to file
         with open('token.txt', 'a', encoding='utf-8') as f:
             f.write(f"{token}\n")
-        
+
         # Verify token was added
         updated_tokens = load_tokens()
         if token in updated_tokens:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | TOKEN ADDED SUCCESSFULLY | TOTAL: {len(updated_tokens)} |  {reset}\n```")
         else:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | ERROR ADDING TOKEN |  {reset}\n```")
-            
+
     except Exception as e:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | ERROR: {str(e)} |  {reset}\n```")
 @bot.command()
@@ -7514,16 +7840,16 @@ async def tpfp(ctx, image_url: str = None, token_input: str = None):
     if image_url is None:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | USAGE: .tpfp <image_url> [token_number/all] |  {reset}\n```")
         return
-    
+
     tokens = load_tokens()
-    
+
     if not tokens:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
         return
-    
+
     # Determine which tokens to use
     selected_tokens = []
-    
+
     if token_input is None or token_input.lower() == 'all':
         selected_tokens = tokens
     else:
@@ -7537,18 +7863,18 @@ async def tpfp(ctx, image_url: str = None, token_input: str = None):
         except ValueError:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN INPUT | USE NUMBER OR 'ALL' |  {reset}\n```")
             return
-    
+
     status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | VALIDATING TOKENS |  {reset}\n```")
-    
+
     # First, validate which tokens are actually working
     valid_tokens = []
-    
+
     async def validate_token(token, index):
         headers = {
             'Authorization': token,
             'Content-Type': 'application/json'
         }
-        
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -7570,21 +7896,21 @@ async def tpfp(ctx, image_url: str = None, token_input: str = None):
         except Exception as e:
             print(f"{theme_secondary}[ERROR] Token {index+1}: {str(e)}{reset}")
             return False
-    
+
     # Validate all tokens
     validation_tasks = []
     for i, token in enumerate(selected_tokens):
         task = asyncio.create_task(validate_token(token, i))
         validation_tasks.append(task)
-    
+
     await asyncio.gather(*validation_tasks)
-    
+
     if not valid_tokens:
         await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | NO VALID TOKENS FOUND |  {reset}\n```")
         return
-    
+
     await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | DOWNLOADING IMAGE | {len(valid_tokens)} VALID TOKENS |  {reset}\n```")
-    
+
     # Download and process image
     try:
         async with aiohttp.ClientSession() as session:
@@ -7592,12 +7918,12 @@ async def tpfp(ctx, image_url: str = None, token_input: str = None):
                 if response.status != 200:
                     await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | FAILED TO DOWNLOAD IMAGE | STATUS: {response.status} |  {reset}\n```")
                     return
-                
+
                 image_data = await response.read()
-                
+
                 # Simple base64 encoding without PIL
                 image_b64 = base64.b64encode(image_data).decode()
-                
+
                 # Determine format from content type
                 content_type = response.headers.get('Content-Type', '')
                 if 'gif' in content_type:
@@ -7606,48 +7932,48 @@ async def tpfp(ctx, image_url: str = None, token_input: str = None):
                     image_format = 'jpeg'
                 else:
                     image_format = 'png'
-                    
+
     except Exception as e:
         await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | IMAGE DOWNLOAD ERROR: {str(e)} |  {reset}\n```")
         return
-    
+
     await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | CHANGING PFPS | {len(valid_tokens)} VALID TOKENS |  {reset}\n```")
-    
+
     success_count = 0
     failed_count = 0
     captcha_count = 0
     invalid_count = 0
-    
+
     async def change_pfp(token_data):
         nonlocal success_count, failed_count, captcha_count, invalid_count
-        
+
         token = token_data['token']
         username = token_data['username']
         index = token_data['index']
-        
+
         headers = {
             'Authorization': token,
             'Content-Type': 'application/json',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
-        
+
         try:
             # Prepare payload
             payload = {
                 'avatar': f"data:image/{image_format};base64,{image_b64}"
             }
-            
+
             async with aiohttp.ClientSession() as session:
                 async with session.patch(
                     'https://discord.com/api/v9/users/@me',
                     headers=headers,
                     json=payload
                 ) as resp:
-                    
+
                     if resp.status == 200:
                         print(f"{theme_primary}[SUCCESS] {username} PFP updated{reset}")
                         success_count += 1
-                        
+
                     elif resp.status == 400:
                         error_data = await resp.json()
                         if 'captcha' in str(error_data).lower():
@@ -7659,42 +7985,42 @@ async def tpfp(ctx, image_url: str = None, token_input: str = None):
                         else:
                             print(f"{theme_secondary}[FAILED] {username}: 400 - {error_data}{reset}")
                             failed_count += 1
-                            
+
                     elif resp.status == 401:
                         print(f"{theme_secondary}[INVALID] {username} unauthorized{reset}")
                         invalid_count += 1
-                        
+
                     elif resp.status == 403:
                         print(f"{theme_secondary}[BLOCKED] {username} action blocked{reset}")
                         failed_count += 1
-                        
+
                     elif resp.status == 429:
                         retry_after = float((await resp.json()).get('retry_after', 1))
                         print(f"{theme_secondary}[RATE LIMITED] {username}, waiting {retry_after}s{reset}")
                         await asyncio.sleep(retry_after)
                         # Don't retry for now to avoid loops
                         failed_count += 1
-                        
+
                     else:
                         print(f"{theme_secondary}[FAILED] {username}: Status {resp.status}{reset}")
                         failed_count += 1
-                        
+
         except Exception as e:
             print(f"{theme_secondary}[ERROR] {username}: {str(e)}{reset}")
             failed_count += 1
-    
+
     # Process valid tokens with delays
     for i, token_data in enumerate(valid_tokens):
         await change_pfp(token_data)
-        
+
         # Update progress
         progress = f"```ansi\n{theme_primary} XLEGACY | PROGRESS: {i+1}/{len(valid_tokens)} | SUCCESS: {success_count} | FAILED: {failed_count} |  {reset}\n```"
         await status_msg.edit(content=progress)
-        
+
         # Add delay between requests (1 second)
         if (i + 1) < len(valid_tokens):
             await asyncio.sleep(1)
-    
+
     # Final status with detailed breakdown
     result_msg = f"""```ansi
 {theme_primary} XLEGACY | PFP UPDATE COMPLETE {reset}
@@ -7712,11 +8038,11 @@ async def tpfpsteal(ctx, user: discord.Member = None, token_input: str = None):
     if user is None:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | MENTION A USER TO STEAL PFP FROM |  {reset}\n```")
         return
-    
+
     # Get user's avatar URL
     avatar_format = "gif" if user.is_avatar_animated() else "png"
     avatar_url = str(user.avatar_url_as(format=avatar_format, size=1024))
-    
+
     # Use the tpfp command with the stolen avatar
     await ctx.invoke(bot.get_command('tpfp'), image_url=avatar_url, token_input=token_input)
 
@@ -7724,22 +8050,22 @@ async def tpfpsteal(ctx, user: discord.Member = None, token_input: str = None):
 async def tvalidate(ctx):
     """Validate all tokens and show which are working"""
     tokens = load_tokens()
-    
+
     if not tokens:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
         return
-    
+
     status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | VALIDATING {len(tokens)} TOKENS |  {reset}\n```")
-    
+
     valid_tokens = []
     invalid_tokens = []
-    
+
     async def validate_single_token(token, index):
         headers = {
             'Authorization': token,
             'Content-Type': 'application/json'
         }
-        
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -7767,29 +8093,29 @@ async def tvalidate(ctx):
                 'error': str(e),
                 'index': index
             })
-    
+
     # Validate all tokens
     tasks = []
     for i, token in enumerate(tokens):
         task = asyncio.create_task(validate_single_token(token, i))
         tasks.append(task)
-    
+
     await asyncio.gather(*tasks)
-    
+
     # Build result message
     result_lines = [f"{theme_primary} TOKEN VALIDATION RESULTS {reset}"]
     result_lines.append(f"{theme_secondary}Valid: {len(valid_tokens)} | Invalid: {len(invalid_tokens)}{reset}")
-    
+
     if valid_tokens:
         result_lines.append(f"\n{theme_primary}VALID TOKENS:{reset}")
         for token_data in valid_tokens:
             result_lines.append(f"{theme_secondary}[{token_data['index']+1}] {token_data['username']} (...{token_data['token']}){reset}")
-    
+
     if invalid_tokens:
         result_lines.append(f"\n{theme_primary}INVALID TOKENS:{reset}")
         for token_data in invalid_tokens:
             result_lines.append(f"{theme_secondary}[{token_data['index']+1}] ...{token_data['token']} - {token_data.get('status', 'UNKNOWN')}{reset}")
-    
+
     result_msg = "```ansi\n" + "\n".join(result_lines) + "\n```"
     await status_msg.edit(content=result_msg)
 # Add to global variables
@@ -7833,7 +8159,7 @@ async def trpc(ctx, action: str = None, *, args: str = None):
         return
 
     tokens = load_tokens()
-    
+
     if action.lower() == 'set':
         await set_token_rpc(ctx, args, tokens)
     elif action.lower() == 'start':
@@ -7854,26 +8180,26 @@ async def set_token_rpc(ctx, args, tokens):
     if not args:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | USAGE: .trpc set <type> <name> [details] [state] |  {reset}\n```")
         return
-    
+
     parts = args.split(' ', 3)  # Split into max 4 parts
     if len(parts) < 2:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | PROVIDE TYPE AND NAME |  {reset}\n```")
         return
-    
+
     rpc_type = parts[0].lower()
     name = parts[1]
     details = parts[2] if len(parts) > 2 else None
     state = parts[3] if len(parts) > 3 else None
-    
+
     # Determine which tokens to configure
     selected_tokens = tokens
-    
+
     status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | CONFIGURING RPC |  {reset}\n```")
-    
+
     config_count = 0
     for i, token in enumerate(selected_tokens):
         token_key = f"token_{i}"
-        
+
         if token_key not in token_rpc_configs:
             token_rpc_configs[token_key] = {
                 'token': token,
@@ -7881,7 +8207,7 @@ async def set_token_rpc(ctx, args, tokens):
                 'current_index': 0,
                 'enabled': False
             }
-        
+
         # Add this configuration
         config = {
             'type': rpc_type,
@@ -7889,10 +8215,10 @@ async def set_token_rpc(ctx, args, tokens):
             'details': details,
             'state': state
         }
-        
+
         token_rpc_configs[token_key]['configs'].append(config)
         config_count += 1
-    
+
     await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | RPC CONFIGURED | {config_count} TOKENS |  {reset}\n```")
 
 async def start_token_rpc(ctx, args, tokens):
@@ -7900,7 +8226,7 @@ async def start_token_rpc(ctx, args, tokens):
     if not token_rpc_configs:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO RPC CONFIGURATIONS | USE .trpc set FIRST |  {reset}\n```")
         return
-    
+
     selected_tokens = []
     if args and args.lower() != 'all':
         try:
@@ -7915,9 +8241,9 @@ async def start_token_rpc(ctx, args, tokens):
             return
     else:
         selected_tokens = list(token_rpc_configs.keys())
-    
+
     status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | STARTING RPC |  {reset}\n```")
-    
+
     started_count = 0
     for token_key in selected_tokens:
         if token_key in token_rpc_configs:
@@ -7925,15 +8251,15 @@ async def start_token_rpc(ctx, args, tokens):
             if config_data['configs'] and not config_data['enabled']:
                 config_data['enabled'] = True
                 config_data['current_index'] = 0
-                
+
                 # Start the rotation task
                 task = asyncio.create_task(rotate_token_rpc(token_key, config_data))
                 token_rpc_tasks[token_key] = task
                 started_count += 1
-                
+
                 # Apply first status immediately
                 await apply_token_rpc(config_data['token'], config_data['configs'][0])
-    
+
     await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | RPC STARTED | {started_count} TOKENS |  {reset}\n```")
 
 async def rotate_token_rpc(token_key, config_data):
@@ -7943,22 +8269,22 @@ async def rotate_token_rpc(token_key, config_data):
             configs = config_data['configs']
             if not configs:
                 break
-            
+
             current_index = config_data['current_index']
             current_config = configs[current_index]
-            
+
             # Apply current RPC
             success = await apply_token_rpc(config_data['token'], current_config)
-            
+
             if success:
                 print(f"{theme_primary}[RPC] {token_key}: {current_config['type']} - {current_config['name']}{reset}")
-            
+
             # Rotate to next configuration
             config_data['current_index'] = (current_index + 1) % len(configs)
-            
+
             # Wait before next rotation
             await asyncio.sleep(random.randint(20, 40))
-            
+
         except Exception as e:
             print(f"{theme_secondary}[RPC ERROR] {token_key}: {e}{reset}")
             await asyncio.sleep(10)
@@ -7970,7 +8296,7 @@ async def apply_token_rpc(token, config):
         'Content-Type': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
-    
+
     try:
         # Build the presence payload
         payload = {
@@ -7979,13 +8305,13 @@ async def apply_token_rpc(token, config):
             'afk': False,
             'since': int(time.time() * 1000)
         }
-        
+
         # Create activity based on type
         activity = {
             'name': config['name'],
             'type': 0  # Default to playing
         }
-        
+
         # Set activity type
         type_map = {
             'game': 0,      # Playing
@@ -7993,21 +8319,21 @@ async def apply_token_rpc(token, config):
             'watch': 3,     # Watching
             'stream': 1     # Streaming
         }
-        
+
         activity['type'] = type_map.get(config['type'], 0)
-        
+
         # Add details and state if provided
         if config.get('details'):
             activity['details'] = config['details']
         if config.get('state'):
             activity['state'] = config['state']
-        
+
         # For streaming, add URL
         if config['type'] == 'stream':
             activity['url'] = 'https://twitch.tv/discord'
-        
+
         payload['activities'] = [activity]
-        
+
         async with aiohttp.ClientSession() as session:
             async with session.patch(
                 'https://discord.com/api/v9/users/@me/settings',
@@ -8020,7 +8346,7 @@ async def apply_token_rpc(token, config):
                     error_text = await resp.text()
                     print(f"{theme_secondary}[RPC FAILED] Status {resp.status}: {error_text}{reset}")
                     return False
-                    
+
     except Exception as e:
         print(f"{theme_secondary}[RPC ERROR] {e}{reset}")
         return False
@@ -8037,23 +8363,23 @@ async def stop_token_rpc(ctx, args, tokens):
             return
     else:
         selected_tokens = list(token_rpc_tasks.keys())
-    
+
     stopped_count = 0
     for token_key in selected_tokens:
         if token_key in token_rpc_tasks:
             token_rpc_tasks[token_key].cancel()
             del token_rpc_tasks[token_key]
-            
+
             if token_key in token_rpc_configs:
                 token_rpc_configs[token_key]['enabled'] = False
-            
+
             # Clear RPC status
             token = token_rpc_configs.get(token_key, {}).get('token')
             if token:
                 await clear_token_rpc(token)
-            
+
             stopped_count += 1
-    
+
     if stopped_count > 0:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | RPC STOPPED | {stopped_count} TOKENS |  {reset}\n```")
     else:
@@ -8065,14 +8391,14 @@ async def clear_token_rpc(token):
         'Authorization': token,
         'Content-Type': 'application/json'
     }
-    
+
     try:
         payload = {
             'activities': [],
             'status': 'online',
             'afk': False
         }
-        
+
         async with aiohttp.ClientSession() as session:
             await session.patch(
                 'https://discord.com/api/v9/users/@me/settings',
@@ -8085,12 +8411,12 @@ async def clear_token_rpc(token):
 async def set_auto_rpc(ctx, args):
     """Enable/disable auto RPC"""
     global auto_rpc_enabled
-    
+
     if not args:
         status = "ENABLED" if auto_rpc_enabled else "DISABLED"
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | AUTO RPC: {status} |  {reset}\n```")
         return
-    
+
     if args.lower() in ['on', 'enable', 'true']:
         auto_rpc_enabled = True
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | AUTO RPC ENABLED |  {reset}\n```")
@@ -8105,10 +8431,10 @@ async def show_rpc_status(ctx, tokens):
     if not token_rpc_configs:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO RPC CONFIGURATIONS |  {reset}\n```")
         return
-    
+
     status_lines = [f"{theme_primary} TOKEN RPC STATUS {reset}"]
     status_lines.append(f"{theme_secondary}Auto Start: {'ENABLED' if auto_rpc_enabled else 'DISABLED'}{reset}")
-    
+
     active_count = 0
     for i, token in enumerate(tokens):
         token_key = f"token_{i}"
@@ -8116,16 +8442,16 @@ async def show_rpc_status(ctx, tokens):
             config_data = token_rpc_configs[token_key]
             status = "ACTIVE" if config_data['enabled'] else "INACTIVE"
             config_count = len(config_data['configs'])
-            
+
             if config_data['enabled']:
                 active_count += 1
                 current_config = config_data['configs'][config_data['current_index']]
                 status_lines.append(f"{theme_secondary}[{i+1}] {status} | {current_config['type']}: {current_config['name']}{reset}")
             else:
                 status_lines.append(f"{theme_secondary}[{i+1}] {status} | {config_count} configs{reset}")
-    
+
     status_lines.append(f"{theme_primary}Active: {active_count}/{len(token_rpc_configs)}{reset}")
-    
+
     await ctx.send(f"```ansi\n" + "\n".join(status_lines) + "\n```")
 
 async def apply_rpc_preset(ctx, preset_name, tokens):
@@ -8146,12 +8472,12 @@ async def apply_rpc_preset(ctx, preset_name, tokens):
             {'type': 'game', 'name': 'Python', 'details': 'Developing selfbot', 'state': 'Discord.py'}
         ]
     }
-    
+
     if preset_name.lower() not in presets:
         available = ", ".join(presets.keys())
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID PRESET | AVAILABLE: {available} |  {reset}\n```")
         return
-    
+
     # Apply preset to all tokens
     preset_configs = presets[preset_name.lower()]
     for i, token in enumerate(tokens):
@@ -8163,9 +8489,9 @@ async def apply_rpc_preset(ctx, preset_name, tokens):
                 'current_index': 0,
                 'enabled': False
             }
-        
+
         token_rpc_configs[token_key]['configs'] = preset_configs.copy()
-    
+
     await ctx.send(f"```ansi\n{theme_primary} XLEGACY | PRESET APPLIED | {preset_name.upper()} |  {reset}\n```")
 
 @bot.command()
@@ -8174,22 +8500,22 @@ async def tjoin(ctx, invite_code: str = None, token_input: str = None):
     if invite_code is None:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | USAGE: .tjoin <invite_code> [token_number/all] |  {reset}\n```")
         return
-    
+
     # Clean invite code (remove discord.gg/ etc)
     if 'discord.gg/' in invite_code:
         invite_code = invite_code.split('discord.gg/')[-1]
     elif 'discord.com/invite/' in invite_code:
         invite_code = invite_code.split('discord.com/invite/')[-1]
-    
+
     tokens = load_tokens()
-    
+
     if not tokens:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
         return
-    
+
     # Determine which tokens to use
     selected_tokens = []
-    
+
     if token_input is None or token_input.lower() == 'all':
         selected_tokens = tokens
     else:
@@ -8203,18 +8529,18 @@ async def tjoin(ctx, invite_code: str = None, token_input: str = None):
         except ValueError:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN INPUT | USE NUMBER OR 'ALL' |  {reset}\n```")
             return
-    
+
     status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | VALIDATING TOKENS |  {reset}\n```")
-    
+
     # First, validate which tokens are actually working
     valid_tokens = []
-    
+
     async def validate_token(token, index):
         headers = {
             'Authorization': token,
             'Content-Type': 'application/json'
         }
-        
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
@@ -8236,39 +8562,39 @@ async def tjoin(ctx, invite_code: str = None, token_input: str = None):
         except Exception as e:
             print(f"{theme_secondary}[ERROR] Token {index+1}: {str(e)}{reset}")
             return False
-    
+
     # Validate all tokens
     validation_tasks = []
     for i, token in enumerate(selected_tokens):
         task = asyncio.create_task(validate_token(token, i))
         validation_tasks.append(task)
-    
+
     await asyncio.gather(*validation_tasks)
-    
+
     if not valid_tokens:
         await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | NO VALID TOKENS FOUND |  {reset}\n```")
         return
-    
+
     await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | JOINING SERVER | {len(valid_tokens)} VALID TOKENS |  {reset}\n```")
-    
+
     success_count = 0
     failed_count = 0
     captcha_count = 0
     banned_count = 0
-    
+
     async def join_server(token_data):
         nonlocal success_count, failed_count, captcha_count, banned_count
-        
+
         token = token_data['token']
         username = token_data['username']
         index = token_data['index']
-        
+
         headers = {
             'Authorization': token,
             'Content-Type': 'application/json',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
-        
+
         try:
             async with aiohttp.ClientSession() as session:
                 # Join the server
@@ -8277,14 +8603,14 @@ async def tjoin(ctx, invite_code: str = None, token_input: str = None):
                     headers=headers,
                     json={}
                 ) as resp:
-                    
+
                     if resp.status == 200:
                         # Successfully joined
                         response_data = await resp.json()
                         guild_name = response_data.get('guild', {}).get('name', 'Unknown Server')
                         print(f"{theme_primary}[SUCCESS] {username} joined {guild_name}{reset}")
                         success_count += 1
-                        
+
                     elif resp.status == 403:
                         # Forbidden - usually means banned or no permission
                         error_data = await resp.json()
@@ -8294,7 +8620,7 @@ async def tjoin(ctx, invite_code: str = None, token_input: str = None):
                         else:
                             print(f"{theme_secondary}[BLOCKED] {username} cannot join: {error_data}{reset}")
                             failed_count += 1
-                            
+
                     elif resp.status == 400:
                         error_data = await resp.json()
                         if 'captcha' in str(error_data).lower():
@@ -8306,11 +8632,11 @@ async def tjoin(ctx, invite_code: str = None, token_input: str = None):
                         else:
                             print(f"{theme_secondary}[FAILED] {username}: 400 - {error_data}{reset}")
                             failed_count += 1
-                            
+
                     elif resp.status == 404:
                         print(f"{theme_secondary}[INVALID] {username}: Invalid invite code{reset}")
                         failed_count += 1
-                        
+
                     elif resp.status == 429:
                         # Rate limited
                         retry_after = float((await resp.json()).get('retry_after', 1))
@@ -8318,27 +8644,27 @@ async def tjoin(ctx, invite_code: str = None, token_input: str = None):
                         await asyncio.sleep(retry_after)
                         # Don't retry to avoid loops
                         failed_count += 1
-                        
+
                     else:
                         print(f"{theme_secondary}[FAILED] {username}: Status {resp.status}{reset}")
                         failed_count += 1
-                        
+
         except Exception as e:
             print(f"{theme_secondary}[ERROR] {username}: {str(e)}{reset}")
             failed_count += 1
-    
+
     # Process valid tokens with delays to avoid rate limits
     for i, token_data in enumerate(valid_tokens):
         await join_server(token_data)
-        
+
         # Update progress
         progress = f"```ansi\n{theme_primary} XLEGACY | PROGRESS: {i+1}/{len(valid_tokens)} | SUCCESS: {success_count} | FAILED: {failed_count} |  {reset}\n```"
         await status_msg.edit(content=progress)
-        
+
         # Add delay between requests (2 seconds to avoid rate limits)
         if (i + 1) < len(valid_tokens):
             await asyncio.sleep(2)
-    
+
     # Final status with detailed breakdown
     result_msg = f"""```ansi
 {theme_primary} XLEGACY | JOIN COMPLETE {reset}
@@ -8357,16 +8683,16 @@ async def tjoinfriend(ctx, user_id: str = None, token_input: str = None):
     if user_id is None:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | USAGE: .tjoinfriend <user_id> [token_number/all] |  {reset}\n```")
         return
-    
+
     tokens = load_tokens()
-    
+
     if not tokens:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
         return
-    
+
     # Determine which tokens to use
     selected_tokens = []
-    
+
     if token_input is None or token_input.lower() == 'all':
         selected_tokens = tokens
     else:
@@ -8380,32 +8706,32 @@ async def tjoinfriend(ctx, user_id: str = None, token_input: str = None):
         except ValueError:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN INPUT |  {reset}\n```")
             return
-    
+
     status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | SENDING FRIEND REQUESTS |  {reset}\n```")
-    
+
     success_count = 0
     failed_count = 0
-    
+
     async def send_friend_request(token, index):
         nonlocal success_count, failed_count
-        
+
         headers = {
             'Authorization': token,
             'Content-Type': 'application/json'
         }
-        
+
         try:
             payload = {
                 'username': user_id
             }
-            
+
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     'https://discord.com/api/v9/users/@me/relationships',
                     headers=headers,
                     json=payload
                 ) as resp:
-                    
+
                     if resp.status in [200, 204]:
                         print(f"{theme_primary}[FRIEND] Token {index+1} sent friend request{reset}")
                         success_count += 1
@@ -8420,23 +8746,23 @@ async def tjoinfriend(ctx, user_id: str = None, token_input: str = None):
                     else:
                         print(f"{theme_secondary}[FAILED] Token {index+1}: Status {resp.status}{reset}")
                         failed_count += 1
-                        
+
         except Exception as e:
             print(f"{theme_secondary}[ERROR] Token {index+1}: {str(e)}{reset}")
             failed_count += 1
-    
+
     # Send friend requests
     for i, token in enumerate(selected_tokens):
         await send_friend_request(token, i)
-        
+
         # Update progress
         progress = f"```ansi\n{theme_primary} XLEGACY | PROGRESS: {i+1}/{len(selected_tokens)} | SUCCESS: {success_count} | FAILED: {failed_count} |  {reset}\n```"
         await status_msg.edit(content=progress)
-        
+
         # Add delay
         if (i + 1) < len(selected_tokens):
             await asyncio.sleep(1)
-    
+
     await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | FRIEND REQUESTS SENT | SUCCESS: {success_count} | FAILED: {failed_count} |  {reset}\n```")
 
 @bot.command()
@@ -8445,16 +8771,16 @@ async def tleaveserver(ctx, server_id: str = None, token_input: str = None):
     if server_id is None:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | USAGE: .tleaveserver <server_id> [token_number/all] |  {reset}\n```")
         return
-    
+
     tokens = load_tokens()
-    
+
     if not tokens:
         await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NO TOKENS FOUND |  {reset}\n```")
         return
-    
+
     # Determine which tokens to use
     selected_tokens = []
-    
+
     if token_input is None or token_input.lower() == 'all':
         selected_tokens = tokens
     else:
@@ -8468,20 +8794,20 @@ async def tleaveserver(ctx, server_id: str = None, token_input: str = None):
         except ValueError:
             await ctx.send(f"```ansi\n{theme_primary} XLEGACY | INVALID TOKEN INPUT |  {reset}\n```")
             return
-    
+
     status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | LEAVING SERVER |  {reset}\n```")
-    
+
     success_count = 0
     failed_count = 0
-    
+
     async def leave_server(token, index):
         nonlocal success_count, failed_count
-        
+
         headers = {
             'Authorization': token,
             'Content-Type': 'application/json'
         }
-        
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.delete(
@@ -8489,7 +8815,7 @@ async def tleaveserver(ctx, server_id: str = None, token_input: str = None):
                     headers=headers,
                     json={'lurking': False}
                 ) as resp:
-                    
+
                     if resp.status in [200, 204]:
                         print(f"{theme_primary}[LEFT] Token {index+1} left server{reset}")
                         success_count += 1
@@ -8499,53 +8825,98 @@ async def tleaveserver(ctx, server_id: str = None, token_input: str = None):
                     else:
                         print(f"{theme_secondary}[FAILED] Token {index+1}: Status {resp.status}{reset}")
                         failed_count += 1
-                        
+
         except Exception as e:
             print(f"{theme_secondary}[ERROR] Token {index+1}: {str(e)}{reset}")
             failed_count += 1
-    
+
     # Leave server
     for i, token in enumerate(selected_tokens):
         await leave_server(token, i)
-        
+
         # Update progress
         progress = f"```ansi\n{theme_primary} XLEGACY | PROGRESS: {i+1}/{len(selected_tokens)} | SUCCESS: {success_count} | FAILED: {failed_count} |  {reset}\n```"
         await status_msg.edit(content=progress)
-        
+
         # Add delay
         if (i + 1) < len(selected_tokens):
             await asyncio.sleep(1)
-    
+
     await status_msg.edit(content=f"```ansi\n{theme_primary} XLEGACY | SERVER LEAVE COMPLETE | SUCCESS: {success_count} | FAILED: {failed_count} |  {reset}\n```")
 
 
 
 class _MockMessage:
-    id = 0
-    async def delete(self):
+    """Minimal message stub that satisfies discord.py internal checks."""
+    def __init__(self, state):
+        self._state = state          # required by get_context / bot internals
+        self.id = 0
+        self.content = ""
+        self.attachments = []
+        self.embeds = []
+        self.reactions = []
+        self.mentions = []
+        self.role_mentions = []
+        self.channel_mentions = []
+        self.flags = discord.MessageFlags._from_value(0)
+        self.type = discord.MessageType.default
+        self.pinned = False
+        self.mention_everyone = False
+        self.tts = False
+        self.nonce = None
+        self.edited_at = None
+        self.author = None           # set after bot is ready
+        self.channel = None          # set after bot is ready
+        self.guild = None
+
+    async def delete(self, **kwargs):
         pass
+
     async def edit(self, content=None, **kwargs):
         if content:
             print(content)
+        return self
+
+    async def add_reaction(self, emoji):
+        pass
+
+    async def remove_reaction(self, emoji, member):
+        pass
+
+    async def reply(self, content=None, **kwargs):
+        if content:
+            print(content)
+        return self
+
 
 class _MockChannel:
     id = 0
-    type = None
+    type = discord.ChannelType.text
+    name = "console"
+    guild = None
+
     async def send(self, content=None, **kwargs):
         if content:
             print(content)
-        return _MockMessage()
+        return None
+
     async def history(self, *args, **kwargs):
         return
         yield
 
+    def permissions_for(self, member):
+        return discord.Permissions.all()
+
+
 class _MockGuild:
     id = 0
     name = "Console"
+    me = None
+
 
 class ConsoleContext:
-    def __init__(self):
-        self.message = _MockMessage()
+    def __init__(self, state):
+        self.message = _MockMessage(state)
         self.channel = _MockChannel()
         self.author = None
         self.guild = _MockGuild()
@@ -8557,22 +8928,33 @@ class ConsoleContext:
         self.kwargs = {}
         self.voice_client = None
         self.me = None
+        self.view = None
+        self._state = state
 
     async def send(self, content=None, **kwargs):
         if content:
             print(content)
-        return _MockMessage()
+        return self.message
 
     async def reply(self, content=None, **kwargs):
         if content:
             print(content)
-        return _MockMessage()
+        return self.message
 
     async def invoke(self, cmd, *args, **kwargs):
         try:
             await cmd(self, *args, **kwargs)
         except Exception as e:
             print(f"{red}[Console] Error invoking command: {e}{reset}")
+
+    async def typing(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
 
 _CONSOLE_CATEGORIES = {
     "main", "misc", "autocmd", "spotify", "account",
@@ -8600,9 +8982,13 @@ _CONSOLE_BANNER = fr"""
 
 async def console_loop():
     await bot.wait_until_ready()
-    ctx = ConsoleContext()
+    state = bot._connection
+    ctx = ConsoleContext(state)
     ctx.author = bot.user
     ctx.me = bot.user
+    ctx.message.author = bot.user
+    ctx.message.channel = ctx.channel
+    ctx.guild.me = bot.user
 
     print(_CONSOLE_BANNER)
 
@@ -8630,15 +9016,26 @@ async def console_loop():
             ctx.prefix = PREFIX
 
             try:
-                if args_str:
-                    await ctx.invoke(cmd, args_str)
-                else:
-                    await ctx.invoke(cmd)
-            except TypeError:
-                try:
-                    await ctx.invoke(cmd)
-                except Exception as e:
-                    print(f"{light_red}[Console] {e}{reset}")
+                # Use discord.py's StringView + argument converter pipeline directly
+                # so every command signature (positional, *, keyword-only) works correctly
+                from discord.ext.commands.core import Command
+                from discord.ext.commands.view import StringView
+
+                ctx.invoked_with = cmd_name
+                ctx.command = cmd
+                ctx.prefix = PREFIX
+                ctx.message.content = f"{PREFIX}{cmd_name}" + (f" {args_str}" if args_str else "")
+                ctx.view = StringView(ctx.message.content)
+                ctx.view.skip_string(PREFIX)
+                ctx.view.skip_string(cmd_name)
+                ctx.view.skip_ws()
+
+                # Let discord.py transform and invoke with proper arg parsing
+                await cmd.invoke(ctx)
+            except discord.ext.commands.MissingRequiredArgument as e:
+                print(f"{light_red}[Console] Missing argument: {e.param.name}{reset}")
+            except discord.ext.commands.BadArgument as e:
+                print(f"{light_red}[Console] Bad argument: {e}{reset}")
             except Exception as e:
                 print(f"{light_red}[Console] {e}{reset}")
 
