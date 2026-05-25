@@ -8,7 +8,6 @@ from discord.ext import commands
 import asyncio
 import random
 import aiohttp
-import websockets
 import shutil
 from discord.ext import commands, tasks
 import sys
@@ -269,155 +268,21 @@ def save_hosted_users():
 
 
 def load_hosted_users():
+    """Load hosted users from HOST_CONFIG_FILE."""
     global hosted_users
     try:
         if os.path.exists(HOST_CONFIG_FILE):
-            with open(HOST_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            with open(HOST_CONFIG_FILE, 'r') as f:
                 hosted_users = json.load(f)
         else:
             hosted_users = {}
             save_hosted_users()
-    except Exception:
-        hosted_users = {}
-
-def make_hosted_bot(token: str, username: str):
-    """
-    Create a fully independent selfbot for a hosted token.
-    Registers all commands from the main bot so the hosted user
-    has access to the full command set running under their own account.
-    """
-    hbot = commands.Bot(
-        command_prefix=PREFIX,
-        self_bot=True,
-        help_command=None,
-        chunk_guilds_at_startup=False,
-        guild_subscriptions=False,
-    )
-
-    # Force user-token login — never prepend "Bot " to the auth header
-    # Also store the raw token directly on hbot so _safe_react can always
-    # retrieve it reliably without depending on http.token internals
-    hbot._raw_token = token
-    original_start = hbot.start
-    async def patched_start(token_str, *, bot=False):
-        hbot._raw_token = token_str  # keep in sync if token changes
-        return await original_start(token_str, bot=False)
-    hbot.start = patched_start
-
-    # Register every command from the main bot onto this hosted instance.
-    # We iterate bot.commands AFTER this function is called (at startup),
-    # so all commands are already registered on the main bot by then.
-    def _sync_commands():
-        for cmd in list(bot.commands):
-            # Skip the host management commands — hosted users shouldn't manage hosting
-            if cmd.name in ("host",):
-                continue
-            try:
-                # Remove if already added to avoid duplicate errors on re-sync
-                hbot.remove_command(cmd.name)
-                hbot.add_command(cmd)
-            except Exception:
-                pass
-
-    @hbot.event
-    async def on_ready():
-        _sync_commands()
-        # Re-confirm _raw_token using the actual HTTP token after login
-        hbot._raw_token = hbot.http.token
-        print(f"{red}[HOST] {hbot.user} ready — {len(hbot.commands)} commands loaded{reset}")
-        tok = hbot._raw_token
-        print(f"{red}[HOST] token preview: {tok[:4]}...{tok[-4:] if tok else '?'}{reset}")
-
-    @hbot.event
-    async def on_message(message):
-        # --- Autoreact / supereact / dreact on other users' messages ---
-        if message.author != hbot.user:
-            mid = message.author.id
-
-            if mid in autoreact_users:
-                emojis = autoreact_users[mid]
-                if isinstance(emojis, str):
-                    emojis = [emojis]
-                for emoji in emojis:
-                    await _safe_react(message, emoji, label="autoreact", client=hbot)
-                    await asyncio.sleep(0.3)
-
-            if mid in supereact_users:
-                for emoji in supereact_users[mid]:
-                    await _safe_react(message, emoji, label="supereact", client=hbot)
-                    await asyncio.sleep(0.3)
-
-            if mid in dreact_users:
-                dreact_data = dreact_users[mid]
-                emoji_list, idx = dreact_data[0], dreact_data[1]
-                if emoji_list:
-                    current_emoji = emoji_list[idx % len(emoji_list)]
-                    dreact_users[mid][1] = (idx + 1) % len(emoji_list)
-                    await _safe_react(message, current_emoji, label="dreact", client=hbot)
-            return
-
-        # --- Commands: only fire on prefix messages ---
-        if not message.content.startswith(PREFIX):
-            return
-
-        # Use hbot's own context so everything runs under the hosted account
-        try:
-            ctx = await hbot.get_context(message)
-            if ctx.command:
-                print(f"{red}[HOST:{username}] {PREFIX}{ctx.command.qualified_name}{reset}")
-                await hbot.invoke(ctx)
-            else:
-                cmd_name = message.content.split()[0].lstrip(PREFIX)
-                print(f"{light_red}[HOST:{username}] Unknown command: {cmd_name}{reset}")
-        except Exception as e:
-            print(f"{light_red}[HOST:{username}] Error: {e}{reset}")
-
-    @hbot.event
-    async def on_command_error(ctx, error):
-        if isinstance(error, commands.CommandNotFound):
-            print(f"{light_red}[HOST:{username}] Command not found: {ctx.invoked_with}{reset}")
-        else:
-            print(f"{light_red}[HOST:{username}] Error in {ctx.command}: {error}{reset}")
-
-    return hbot
-
-
-async def _start_hosted_client(user_id: str, token: str, username: str):
-    """Build and start an independent bot for a hosted token.
-    Removes the user from hosted_users if the token is invalid.
-    """
-    if user_id in host_clients:
-        return  # already running
-
-    hbot = make_hosted_bot(token, username)
-    # Store BEFORE start so we can clean up on failure
-    host_clients[user_id] = hbot
-    try:
-        # bot=False ensures the token is used as a user token, not a bot token
-        await hbot.start(token, bot=False)
-    except discord.LoginFailure:
-        print(f"{light_red}[HOST] Invalid token for {username} — removing{reset}")
-        host_clients.pop(user_id, None)
-        # Remove from saved list so it doesn't retry on next restart
-        hosted_users.pop(user_id, None)
-        save_hosted_users()
     except Exception as e:
-        print(f"{light_red}[HOST] Error starting {username}: {e}{reset}")
-        host_clients.pop(user_id, None)
-
-
-async def restore_hosted_clients():
-    """Re-connect any hosted tokens saved from a previous session."""
-    await bot.wait_until_ready()
-    for user_id, val in list(hosted_users.items()):
-        if not isinstance(val, dict):
-            continue
-        token    = val.get("token")
-        username = val.get("username", user_id)
-        if not token or user_id in host_clients:
-            continue
-        print(f"{red}[HOST] Restoring {username} ({user_id}){reset}")
-        asyncio.create_task(_start_hosted_client(user_id, token, username))
+        try:
+            print(f"{theme_primary}Error loading host config: {e}{reset}")
+        except Exception:
+            print("Error loading host config: ", e)
+        hosted_users = {}
 
 
 # Load hosted users on startup
@@ -431,93 +296,34 @@ async def host(ctx):
 
 
 @host.command(name='add')
-async def host_add(ctx, token: str):
-    """Add a token to the hosted list. Usage: .host add <token>"""
+async def host_add(ctx, user: discord.User):
+    """Add a user to the hosted list."""
+    if ctx.author != bot.user:
+        await ctx.send(f"```ansi\n{theme_primary}Unauthorized - only the host owner can manage hosted users{reset}\n```")
+        return
     try:
-        # Validate the token via Discord API and get the user id/name
-        headers = {"Authorization": token, "Content-Type": "application/json"}
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://discord.com/api/v9/users/@me",
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                if resp.status != 200:
-                    await ctx.send(f"```ansi\n{red} XLEGACY | INVALID TOKEN | STATUS {resp.status} |  {reset}\n```")
-                    return
-                user_data = await resp.json()
-
-        user_id   = str(user_data["id"])
-        username  = user_data.get("username", "unknown")
-
-        # Save token
-        hosted_users[user_id] = {"token": token, "username": username}
+        hosted_users[str(user.id)] = True
         save_hosted_users()
-
-        if user_id in host_clients:
-            await ctx.send(f"```ansi\n{red} XLEGACY | ALREADY RUNNING | {username} ({user_id}) |  {reset}\n```")
-            return
-
-        # Spin up — notify when ready, remove if token is bad
-        status_msg = await ctx.send(f"```ansi\n{red} XLEGACY | STARTING | {username} | LOGGING IN... |  {reset}\n```")
-
-        async def _start_and_report():
-            await _start_hosted_client(user_id, token, username)
-            if user_id in host_clients:
-                await status_msg.edit(content=f"```ansi\n{red} XLEGACY | HOSTED | {username} ({user_id}) | ONLINE |  {reset}\n```")
-            else:
-                await status_msg.edit(content=f"```ansi\n{red} XLEGACY | FAILED | {username} | INVALID TOKEN — REMOVED |  {reset}\n```")
-
-        asyncio.create_task(_start_and_report())
-        print(f"{red}Starting hosted client: {username} ({user_id}){reset}")
-
-    except asyncio.TimeoutError:
-        await ctx.send(f"```ansi\n{red} XLEGACY | TIMEOUT | TOKEN VALIDATION FAILED |  {reset}\n```")
+        await ctx.send(f"```ansi\n{theme_primary}Added hosted user: {user.name} ({user.id}){reset}\n```")
     except Exception as e:
-        await ctx.send(f"```ansi\n{red} XLEGACY | ERROR | {e} |  {reset}\n```")
+        await ctx.send(f"```ansi\n{theme_primary}Failed to add hosted user: {e}{reset}\n```")
 
 
 @host.command(name='remove')
-async def host_remove(ctx, token_or_id: str):
-    """Remove a hosted token by token or user ID. Usage: .host remove <token_or_id>"""
+async def host_remove(ctx, user: discord.User):
+    """Remove a user from the hosted list."""
+    if ctx.author != bot.user:
+        await ctx.send(f"```ansi\n{theme_primary}Unauthorized - only the host owner can manage hosted users{reset}\n```")
+        return
     try:
-        # Accept either a raw user ID or a token
-        target_id = None
-        if token_or_id.isdigit():
-            target_id = token_or_id
+        if str(user.id) in hosted_users:
+            del hosted_users[str(user.id)]
+            save_hosted_users()
+            await ctx.send(f"```ansi\n{theme_primary}Removed hosted user: {user.name} ({user.id}){reset}\n```")
         else:
-            # It's a token — resolve the user id from it
-            headers = {"Authorization": token_or_id}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    "https://discord.com/api/v9/users/@me",
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        target_id = str(data["id"])
-
-        if not target_id or target_id not in hosted_users:
-            await ctx.send(f"```ansi\n{red} XLEGACY | NOT FOUND | NO HOSTED USER WITH THAT ID/TOKEN |  {reset}\n```")
-            return
-
-        username = hosted_users[target_id].get("username", target_id) if isinstance(hosted_users[target_id], dict) else target_id
-
-        # Stop the hosted bot if running
-        if target_id in host_clients:
-            try:
-                await host_clients[target_id].close()
-            except Exception:
-                pass
-            host_clients.pop(target_id, None)
-
-        del hosted_users[target_id]
-        save_hosted_users()
-        await ctx.send(f"```ansi\n{red} XLEGACY | REMOVED | {username} ({target_id}) |  {reset}\n```")
-
+            await ctx.send(f"```ansi\n{theme_primary}User is not hosted: {user.name}{reset}\n```")
     except Exception as e:
-        await ctx.send(f"```ansi\n{red} XLEGACY | ERROR | {e} |  {reset}\n```")
+        await ctx.send(f"```ansi\n{theme_primary}Failed to remove hosted user: {e}{reset}\n```")
 
 
 @host.command(name='list')
@@ -531,11 +337,13 @@ async def host_list(ctx):
             await ctx.send(f"```ansi\n{theme_primary}No hosted users configured{reset}\n```")
             return
         lines = []
-        for uid, val in list(hosted_users.items()):
-            username = val.get("username", "Unknown") if isinstance(val, dict) else "Unknown"
-            status = "🟢 online" if uid in host_clients else "⚫ offline"
-            lines.append(f"{username} ({uid}) — {status}")
-        await ctx.send(f"```ansi\n{red} XLEGACY | HOSTED USERS |  {reset}\n\n{chr(10).join(lines)}\n```")
+        for uid in list(hosted_users.keys()):
+            try:
+                u = await bot.fetch_user(int(uid))
+                lines.append(f"{u.name} ({uid})")
+            except Exception:
+                lines.append(f"Unknown User ({uid})")
+        await ctx.send(f"```ansi\n{theme_primary}Hosted users:\n\n{theme_secondary}" + "\n".join(lines) + f"{reset}\n```")
     except Exception as e:
         await ctx.send(f"```ansi\n{theme_primary}Failed to list hosted users: {e}{reset}\n```")
 
@@ -610,7 +418,7 @@ async def on_ready():
     bot_prefix = f"Prefix: {PREFIX}".ljust(36)
     version = f"Version: V.1".ljust(36)
     server_count = f"Servers: {len(bot.guilds)}".ljust(36)
-    friend_count = f"Friends: {len([f for f in bot.user.friends])}".ljust(36)
+    friend_count = f"Friends: {0}".ljust(36)
     token_count = f"Tokens: {len(load_tokens())}".ljust(36)
 
     # Count hosted bots for display
@@ -741,9 +549,6 @@ async def on_ready():
         print(f"{theme_secondary}⚠️ Error in hosted bots auto-start: {e}{reset}")
 
     asyncio.create_task(console_loop())
-    asyncio.create_task(restore_hosted_clients())
-    # Store raw token so _safe_react can always resolve the main account token
-    bot._raw_token = bot.http.token
 
 
 @bot.command()
@@ -1119,157 +924,111 @@ async def tok(ctx):
         await loading_message.edit(content=f"```ansi\n{final_message}```")
 
 # Add this with your other global variables at the top
-active_clients = []  # legacy
-active_vc_connections = {}  # channel_id -> [asyncio.Task, ...]
+active_clients = []
 
 @bot.command()
 async def multivc(ctx, channel_id: int):
-    """Connect all tokens in token.txt to a VC using raw websockets (24/7, no PyNaCl needed)."""
-    global active_vc_connections
+    """Connect multiple tokens to a voice channel"""
     tokens = load_tokens()
 
     if not tokens:
-        await ctx.send(f"```ansi\n{red} XLEGACY | NO TOKENS IN token.txt |  {reset}\n```")
+        await ctx.send("```No tokens found in token.txt```")
         return
 
-    # Resolve guild_id from the channel using the main bot
-    guild_id = None
-    for guild in bot.guilds:
-        ch = guild.get_channel(channel_id)
-        if ch:
-            guild_id = guild.id
-            break
+    async def connect_voice(token):
+        try:
+            intents = discord.Intents.default()
+            intents.voice_states = True
+            client = commands.Bot(command_prefix='.', self_bot=True, intents=intents)
 
-    if not guild_id:
-        await ctx.send(f"```ansi\n{red} XLEGACY | CHANNEL NOT FOUND | {channel_id} |  {reset}\n```")
-        return
-
-    status_msg = await ctx.send(
-        f"```ansi\n{red} XLEGACY | CONNECTING {len(tokens)} TOKENS TO VC {channel_id} |  {reset}\n```"
-    )
-
-    async def voicecord_session(token):
-        """Raw websocket VC session — mirrors Voicecord's approach for 24/7 stability."""
-        uri = "wss://gateway.discord.gg/?v=10&encoding=json"
-        tok_preview = token[-4:]
-
-        async def heartbeat(ws, interval):
-            while True:
-                await asyncio.sleep(interval / 1000)
+            @client.event
+            async def on_ready():
                 try:
-                    await ws.send(json.dumps({"op": 1, "d": None}))
-                except Exception:
-                    break
+                    channel = client.get_channel(channel_id)
+                    if channel and isinstance(channel, discord.VoiceChannel):
+                        voice = await channel.connect()
+                        active_clients.append(client)
+                        print(f"{red}Connected to voice with token ending in {token[-4:]}{reset}")
+                    else:
+                        print(f"{light_red}Voice channel not found for token ending in {token[-4:]}{reset}")
+                except Exception as e:
+                    print(f"{light_red}Error connecting token {token[-4:]}: {e}{reset}")
 
-        while True:  # outer loop = auto-reconnect forever
-            try:
-                async with websockets.connect(uri, max_size=10 * 1024 * 1024) as ws:
-                    hello = json.loads(await ws.recv())
-                    interval = hello["d"]["heartbeat_interval"]
-                    asyncio.create_task(heartbeat(ws, interval))
+            await client.start(token)
 
-                    # Identify as user
-                    await ws.send(json.dumps({
-                        "op": 2,
-                        "d": {
-                            "token": token,
-                            "properties": {"$os": "windows", "$browser": "chrome", "$device": "pc"},
-                            "presence": {"status": "online", "afk": False}
-                        }
-                    }))
+        except Exception as e:
+            print(f"{light_red}Error with token {token[-4:]}: {e}{reset}")
 
-                    # Wait for READY
-                    while True:
-                        event = json.loads(await ws.recv())
-                        if event.get("t") == "READY":
-                            break
+    tasks = [connect_voice(token) for token in tokens]
+    status_msg = await ctx.send(f"```ansi\n{red}Connecting {len(tasks)} tokens to voice channel {channel_id}```")
+    await asyncio.gather(*tasks, return_exceptions=True)
 
-                    # Join the voice channel (opcode 4)
-                    await ws.send(json.dumps({
-                        "op": 4,
-                        "d": {
-                            "guild_id": str(guild_id),
-                            "channel_id": str(channel_id),
-                            "self_mute": False,
-                            "self_deaf": True
-                        }
-                    }))
-
-                    print(f"{red}[MULTIVC] Token ...{tok_preview} connected to VC {channel_id}{reset}")
-
-                    # Keep alive — read messages and stay in VC forever
-                    while True:
-                        try:
-                            await asyncio.wait_for(ws.recv(), timeout=45)
-                        except asyncio.TimeoutError:
-                            # Send heartbeat manually to keep connection alive
-                            await ws.send(json.dumps({"op": 1, "d": None}))
-                        except Exception:
-                            break  # triggers reconnect
-
-            except asyncio.CancelledError:
-                print(f"{red}[MULTIVC] Token ...{tok_preview} disconnected{reset}")
-                return  # vcend cancelled us — stop reconnecting
-            except Exception as e:
-                print(f"{light_red}[MULTIVC] Token ...{tok_preview} error: {e} — reconnecting in 5s{reset}")
-                await asyncio.sleep(5)
-
-    # Cancel any existing sessions for this channel before starting new ones
-    if channel_id in active_vc_connections:
-        for task in active_vc_connections[channel_id]:
-            task.cancel()
-
-    tasks = [asyncio.create_task(voicecord_session(t)) for t in tokens]
-    active_vc_connections[channel_id] = tasks
-
-    await status_msg.edit(content=(
-        f"```ansi\n{red} XLEGACY | MULTIVC ACTIVE | {len(tokens)} TOKENS | VC {channel_id} | 24/7 AUTO-RECONNECT |  {reset}\n```"
-    ))
-    print(f"{red}[MULTIVC] {len(tokens)} tokens connected to VC {channel_id}{reset}")
+    # Update status message
+    await status_msg.edit(content=f"```ansi\n{red}Successfully connected {len(tokens)} tokens to voice channel {channel_id}```")
 
 @bot.command()
-async def vcend(ctx, channel_id: int = None):
-    """Disconnect tokens from a VC. Omit channel_id to end all VCs."""
-    global active_vc_connections
+async def vcend(ctx, channel_id: int):
+    """Disconnect multiple tokens from a voice channel"""
+    tokens = load_tokens()
 
-    if not active_vc_connections:
-        await ctx.send(f"```ansi\n{red} XLEGACY | NO ACTIVE VC CONNECTIONS |  {reset}\n```")
+    if not tokens:
+        await ctx.send("```No tokens found in token.txt```")
         return
 
-    if channel_id:
-        targets = {channel_id: active_vc_connections.pop(channel_id, [])}
-    else:
-        targets = dict(active_vc_connections)
-        active_vc_connections.clear()
+    async def disconnect_voice(token):
+        try:
+            intents = discord.Intents.default()
+            intents.voice_states = True
+            client = commands.Bot(command_prefix='.', self_bot=True, intents=intents)
 
-    total = 0
-    for cid, tasks in targets.items():
-        for task in tasks:
-            task.cancel()
-        total += len(tasks)
-        print(f"{red}[MULTIVC] Ended {len(tasks)} connections for VC {cid}{reset}")
+            @client.event
+            async def on_ready():
+                try:
+                    channel = client.get_channel(channel_id)
+                    if channel:
+                        for vc in client.voice_clients:
+                            if vc.channel and vc.channel.id == channel_id:
+                                await vc.disconnect()
+                                print(f"{red}Disconnected token ending in {token[-4:]}{reset}")
+                    else:
+                        print(f"{light_red}Voice channel not found for token ending in {token[-4:]}{reset}")
+                except Exception as e:
+                    print(f"{light_red}Error disconnecting token {token[-4:]}: {e}{reset}")
+                finally:
+                    await client.close()
 
-    await ctx.send(
-        f"```ansi\n{red} XLEGACY | VCEND | DISCONNECTED {total} TOKENS |  {reset}\n```"
-    )
+            await client.start(token)
+
+        except Exception as e:
+            print(f"{light_red}Error with token {token[-4:]}: {e}{reset}")
+
+    tasks = [disconnect_voice(token) for token in tokens]
+    status_msg = await ctx.send(f"```ansi\n{red}Disconnecting {len(tasks)} tokens from voice channel {channel_id}```")
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Update status message
+    await status_msg.edit(content=f"```ansi\n{red}Successfully disconnected {len(tokens)} tokens from voice channel {channel_id}```")
 
 @bot.command()
 async def vcstop(ctx):
-    """Stop ALL active VC connections across all channels."""
-    global active_vc_connections
+    """Stop all voice connections for all tokens"""
+    global active_clients
 
-    if not active_vc_connections:
-        await ctx.send(f"```ansi\n{red} XLEGACY | NO ACTIVE VC CONNECTIONS |  {reset}\n```")
+    if not active_clients:
+        await ctx.send("```No active voice connections found```")
         return
 
-    total = sum(len(t) for t in active_vc_connections.values())
-    for tasks in active_vc_connections.values():
-        for task in tasks:
-            task.cancel()
-    active_vc_connections.clear()
+    disconnected_count = 0
+    for client in active_clients:
+        try:
+            for voice_client in client.voice_clients:
+                await voice_client.disconnect()
+                disconnected_count += 1
+        except Exception as e:
+            print(f"{light_red}Error disconnecting client: {e}{reset}")
 
-    await ctx.send(f"```ansi\n{red} XLEGACY | VCSTOP | DISCONNECTED {total} TOKENS |  {reset}\n```")
-    print(f"{red}[MULTIVC] All VC connections stopped{reset}")
+    active_clients.clear()
+    await ctx.send(f"```ansi\n{red}Disconnected {disconnected_count} voice clients```")
 
 
 
@@ -1287,93 +1046,153 @@ async def nsfw(ctx):
 {light_red}[ {red}4{light_red} ] {black}maid               {light_red}[ {red}5{light_red} ] {black}oppai              {light_red}[ {red}6{light_red} ] {black}selfies
 {light_red}[ {red}7{light_red} ] {black}raiden             {light_red}[ {red}8{light_red} ] {black}marin
 {reset}""")
+# ── NSFW HELPER ──────────────────────────────────────────────────────────────
+async def fetch_nsfw_image(category: str) -> str | None:
+    """
+    Fetch a NSFW image URL.
+    Primary:  hmtai.t.me  (free, no auth)
+    Fallback: waifu.pics  /nsfw/<category>
+    """
+    timeout = aiohttp.ClientTimeout(total=8)
+
+    # hmtai endpoint map
+    hmtai_map = {
+        "ecchi":   "ecchi",
+        "hentai":  "hentai",
+        "uniform": "uniform",
+        "maid":    "maid",
+        "oppai":   "oppai",
+        "selfies": "selfies",
+        "raiden":  "nsfwNeko",   # closest available
+        "marin":   "nsfwNeko",
+    }
+
+    # waifu.pics nsfw endpoint map
+    waifu_nsfw_map = {
+        "ecchi":   "waifu",
+        "hentai":  "hentai",
+        "uniform": "uniform",
+        "maid":    "waifu",
+        "oppai":   "oppai",
+        "selfies": "waifu",
+        "raiden":  "waifu",
+        "marin":   "waifu",
+    }
+
+    # --- Primary: hmtai ---
+    for attempt in range(3):
+        try:
+            ep = hmtai_map.get(category, "hentai")
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(f"https://hmtai.hatsunia.cfd/nsfw/{ep}") as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        url = data.get("url") or data.get("image")
+                        if url:
+                            return url
+        except Exception:
+            if attempt < 2:
+                await asyncio.sleep(0.8)
+
+    # --- Fallback: waifu.pics /nsfw/ ---
+    try:
+        ep = waifu_nsfw_map.get(category, "hentai")
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"https://api.waifu.pics/nsfw/{ep}") as r:
+                if r.status == 200:
+                    data = await r.json()
+                    url = data.get("url")
+                    if url:
+                        return url
+    except Exception:
+        pass
+
+    return None
+
+
+def _nsfw_send(label: str):
+    """Decorator-factory: wraps a category name into a full nsfw command."""
+    def decorator(func):
+        @bot.command(name=func.__name__)
+        async def wrapper(ctx, member: discord.Member = None):
+            url = await fetch_nsfw_image(func.__name__)
+            if url:
+                await ctx.send(
+                    f"```ansi\n{theme_primary} XLEGACY | {ctx.author.display_name} {label} |  {reset}\n```\n"
+                    f"[XLEGACY]({url})"
+                )
+            else:
+                await ctx.send(
+                    f"```ansi\n{theme_primary} XLEGACY | FAILED TO FETCH IMAGE — API DOWN |  {reset}\n```"
+                )
+        wrapper.__name__ = func.__name__
+        return wrapper
+    return decorator
+
+
 @bot.command(name="ecchi")
 async def ecchi(ctx, member: discord.Member = None):
-    async with aiohttp.ClientSession() as session:
-        async with session.get('https://api.waifu.im/search/?included_tags=ecchi&is_nsfw=true') as response:
-            if response.status == 200:
-                data = await response.json()
-                image_url = data['images'][0]['url']
-                await ctx.send(f"```ansi\n{red} XLEGACY | {ctx.author.display_name} SHARES SOME ECCHI |  {reset}\n```\n[XLEGACY SB]({image_url})")
-            else:
-                await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
+    url = await fetch_nsfw_image("ecchi")
+    if url:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | {ctx.author.display_name} SHARES SOME ECCHI |  {reset}\n```\n[XLEGACY]({url})")
+    else:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
 
 @bot.command(name="hentai")
 async def hentai(ctx, member: discord.Member = None):
-    async with aiohttp.ClientSession() as session:
-        async with session.get('https://api.waifu.im/search/?included_tags=hentai&is_nsfw=true') as response:
-            if response.status == 200:
-                data = await response.json()
-                image_url = data['images'][0]['url']
-                await ctx.send(f"```ansi\n{red} XLEGACY | {ctx.author.display_name} SHARES SOME HENTAI |  {reset}\n```\n[XLEGACY SB]({image_url})")
-            else:
-                await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
+    url = await fetch_nsfw_image("hentai")
+    if url:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | {ctx.author.display_name} SHARES SOME HENTAI |  {reset}\n```\n[XLEGACY]({url})")
+    else:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
 
 @bot.command(name="uniform")
 async def uniform(ctx, member: discord.Member = None):
-    async with aiohttp.ClientSession() as session:
-        async with session.get('https://api.waifu.im/search/?included_tags=uniform&is_nsfw=true') as response:
-            if response.status == 200:
-                data = await response.json()
-                image_url = data['images'][0]['url']
-                await ctx.send(f"```ansi\n{red} XLEGACY | {ctx.author.display_name} SHARES UNIFORM CONTENT |  {reset}\n```\n[XLEGACY SB]({image_url})")
-            else:
-                await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
+    url = await fetch_nsfw_image("uniform")
+    if url:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | {ctx.author.display_name} SHARES UNIFORM CONTENT |  {reset}\n```\n[XLEGACY]({url})")
+    else:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
 
 @bot.command(name="maid")
 async def maid(ctx, member: discord.Member = None):
-    async with aiohttp.ClientSession() as session:
-        async with session.get('https://api.waifu.im/search/?included_tags=maid&is_nsfw=true') as response:
-            if response.status == 200:
-                data = await response.json()
-                image_url = data['images'][0]['url']
-                await ctx.send(f"```ansi\n{red} XLEGACY | {ctx.author.display_name} SHARES MAID CONTENT |  {reset}\n```\n[XLEGACY SB]({image_url})")
-            else:
-                await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
+    url = await fetch_nsfw_image("maid")
+    if url:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | {ctx.author.display_name} SHARES MAID CONTENT |  {reset}\n```\n[XLEGACY]({url})")
+    else:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
 
 @bot.command(name="oppai")
 async def oppai(ctx, member: discord.Member = None):
-    async with aiohttp.ClientSession() as session:
-        async with session.get('https://api.waifu.im/search/?included_tags=oppai&is_nsfw=true') as response:
-            if response.status == 200:
-                data = await response.json()
-                image_url = data['images'][0]['url']
-                await ctx.send(f"```ansi\n{red} XLEGACY | {ctx.author.display_name} SHARES OPPAI CONTENT |  {reset}\n```\n[XLEGACY SB]({image_url})")
-            else:
-                await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
+    url = await fetch_nsfw_image("oppai")
+    if url:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | {ctx.author.display_name} SHARES OPPAI CONTENT |  {reset}\n```\n[XLEGACY]({url})")
+    else:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
 
 @bot.command(name="selfies")
 async def selfies(ctx, member: discord.Member = None):
-    async with aiohttp.ClientSession() as session:
-        async with session.get('https://api.waifu.im/search/?included_tags=selfies&is_nsfw=true') as response:
-            if response.status == 200:
-                data = await response.json()
-                image_url = data['images'][0]['url']
-                await ctx.send(f"```ansi\n{red} XLEGACY | {ctx.author.display_name} SHARES SELFIES |  {reset}\n```\n[XLEGACY SB]({image_url})")
-            else:
-                await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
+    url = await fetch_nsfw_image("selfies")
+    if url:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | {ctx.author.display_name} SHARES SELFIES |  {reset}\n```\n[XLEGACY]({url})")
+    else:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
 
 @bot.command(name="raiden")
 async def raiden(ctx, member: discord.Member = None):
-    async with aiohttp.ClientSession() as session:
-        async with session.get('https://api.waifu.im/search/?included_tags=raiden-shogun&is_nsfw=true') as response:
-            if response.status == 200:
-                data = await response.json()
-                image_url = data['images'][0]['url']
-                await ctx.send(f"```ansi\n{red} XLEGACY | {ctx.author.display_name} SHARES RAIDEN CONTENT |  {reset}\n```\n[XLEGACY SB]({image_url})")
-            else:
-                await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
+    url = await fetch_nsfw_image("raiden")
+    if url:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | {ctx.author.display_name} SHARES RAIDEN CONTENT |  {reset}\n```\n[XLEGACY]({url})")
+    else:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
 
 @bot.command(name="marin")
 async def marin(ctx, member: discord.Member = None):
-    async with aiohttp.ClientSession() as session:
-        async with session.get('https://api.waifu.im/search/?included_tags=marin-kitagawa&is_nsfw=true') as response:
-            if response.status == 200:
-                data = await response.json()
-                image_url = data['images'][0]['url']
-                await ctx.send(f"```ansi\n{red} XLEGACY | {ctx.author.display_name} SHARES MARIN CONTENT |  {reset}\n```\n[XLEGACY SB]({image_url})")
-            else:
-                await ctx.send(f"```ansi\n{red} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
+    url = await fetch_nsfw_image("marin")
+    if url:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | {ctx.author.display_name} SHARES MARIN CONTENT |  {reset}\n```\n[XLEGACY]({url})")
+    else:
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | FAILED TO FETCH IMAGE |  {reset}\n```")
 
 
 @bot.command()
@@ -1603,62 +1422,63 @@ async def supereact_off(ctx, user: discord.User):
     else:
         await ctx.send(f"```ansi\n{red} XLEGACY | NO SUPEREACT SET FOR {user.name} |  {reset}\n```")
 
-async def _safe_react(message, emoji, label="react", client=None):
-    """React to a message using the correct account.
-    Pass client=hbot when calling from a hosted bot so reactions
-    come from that account instead of the main bot.
-    """
+async def _safe_react(message, emoji, label="react"):
+    """React to a message. Uses super reaction for supereact, normal for everything else."""
     import urllib.parse, re as _re, base64, json as _json
-
-    # Resolve which token to use.
-    # Prefer _raw_token we stored ourselves — avoids any "Bot " prefix issues
-    # that can appear when reading from client.http.token in older discord.py.
-    if client is not None:
-        _token = getattr(client, "_raw_token", None) or getattr(client.http, "token", None)
-        if not _token:
-            print(f"{light_red}_safe_react: could not resolve token for hosted client{reset}")
-            return
-        _tok_preview = f"{_token[:4]}...{_token[-4:]}" if _token and len(_token) > 8 else "?"
-        print(f"{red}Reacting as: {getattr(getattr(client, 'user', None), 'name', 'unknown')} (token: {_tok_preview}){reset}")
-    else:
-        _token = bot._raw_token if hasattr(bot, "_raw_token") else bot.http.token
 
     # Encode emoji for URL
     m = _re.match(r'<a?:([\w]+):(\d+)>', str(emoji))
-    emoji_encoded = urllib.parse.quote(f"{m.group(1)}:{m.group(2)}") if m else urllib.parse.quote(str(emoji))
+    if m:
+        emoji_encoded = urllib.parse.quote(f"{m.group(1)}:{m.group(2)}")
+    else:
+        emoji_encoded = urllib.parse.quote(str(emoji))
 
     use_super = label == "supereact"
 
-    async def _put_reaction(token):
-        url = (
-            f"https://discord.com/api/v9/channels/{message.channel.id}"
-            f"/messages/{message.id}/reactions/{emoji_encoded}/%40me"
-        )
-        if use_super:
-            url += "?location=Message%20Reaction%20Picker&type=1"
-        headers = {
-            "Authorization": token,
-            "Content-Type": "application/json",
-        }
-        if use_super:
-            headers["x-super-properties"] = base64.b64encode(
-                _json.dumps({"client_build_number": 9999}).encode()
-            ).decode()
-        async with aiohttp.ClientSession() as session:
-            async with session.put(url, headers=headers) as resp:
-                return resp.status, await resp.json() if resp.content_type == "application/json" else {}
-
     async def _do_react():
-        status, data = await _put_reaction(_token)
-        if status == 429:
-            wait = data.get("retry_after", 1.5)
-            print(f"{light_red}Rate limited on {label}, waiting {wait}s{reset}")
-            await asyncio.sleep(wait + 0.5)
-            status, _ = await _put_reaction(_token)
-            if status not in (200, 201, 204):
-                print(f"{light_red}{label} retry failed ({status}){reset}")
-        elif status not in (200, 201, 204):
-            print(f"{light_red}{label} failed ({status}){reset}")
+        if use_super:
+            # Super reaction: type=1 with location header as per Discord's internal API
+            url = (
+                f"https://discord.com/api/v9/channels/{message.channel.id}"
+                f"/messages/{message.id}/reactions/{emoji_encoded}/%40me"
+                f"?location=Message%20Reaction%20Picker&type=1"
+            )
+            headers = {
+                "Authorization": bot.http.token,
+                "Content-Type": "application/json",
+                "x-super-properties": base64.b64encode(
+                    _json.dumps({"client_build_number": 9999}).encode()
+                ).decode()
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.put(url, headers=headers) as resp:
+                    if resp.status == 429:
+                        data = await resp.json()
+                        wait = data.get("retry_after", 1.5)
+                        print(f"{light_red}Rate limited on supereact, waiting {wait}s{reset}")
+                        await asyncio.sleep(wait + 0.5)
+                        async with session.put(url, headers=headers) as retry:
+                            if retry.status not in (200, 201, 204):
+                                print(f"{light_red}Supereact retry failed ({retry.status}), falling back{reset}")
+                                await message.add_reaction(emoji)
+                    elif resp.status not in (200, 201, 204):
+                        print(f"{light_red}Supereact failed ({resp.status}), falling back to normal{reset}")
+                        await message.add_reaction(emoji)
+        else:
+            # Normal reaction
+            try:
+                await message.add_reaction(emoji)
+            except discord.HTTPException as e:
+                if e.status == 429:
+                    retry_after = getattr(e, "retry_after", 1.0)
+                    print(f"{light_red}Rate limited on {label}, waiting {retry_after + 0.5}s{reset}")
+                    await asyncio.sleep(retry_after + 0.5)
+                    try:
+                        await message.add_reaction(emoji)
+                    except Exception as retry_e:
+                        print(f"{light_red}{label} retry failed for {emoji}: {retry_e}{reset}")
+                else:
+                    print(f"{light_red}Failed to {label} with {emoji}: {e}{reset}")
 
     try:
         await _do_react()
@@ -1667,44 +1487,45 @@ async def _safe_react(message, emoji, label="react", client=None):
 
 @bot.event
 async def on_message(message):
-    # Skip messages from hosted users entirely — their own bot instance
-    # handles reactions and commands so we never double-fire
-    uid = str(message.author.id)
-    if uid in hosted_users or message.author.id in hosted_users:
-        return
-
     # --- Autoreact (multiple emojis) ---
     if message.author.id in autoreact_users:
         emojis = autoreact_users[message.author.id]
         if isinstance(emojis, str):
             emojis = [emojis]
         for emoji in emojis:
-            await _safe_react(message, emoji, label="autoreact", client=bot)
+            await _safe_react(message, emoji, label="autoreact")
             await asyncio.sleep(0.3)
         print(f"{red}Autoreacted with {' '.join(emojis)} to {message.author.name}'s message{reset}")
 
-    # --- Supereact ---
+    # --- Supereact (multiple emojis, small delay between each to avoid rate limits) ---
     if message.author.id in supereact_users:
         emojis = supereact_users[message.author.id]
         for emoji in emojis:
-            await _safe_react(message, emoji, label="supereact", client=bot)
-            await asyncio.sleep(0.3)
+            await _safe_react(message, emoji, label="supereact")
+            await asyncio.sleep(0.3)  # small delay between reactions to reduce rate limit risk
         print(f"{red}Supereacted with {' '.join(emojis)} to {message.author.name}'s message{reset}")
 
-    # --- Dreact ---
+    # --- Dreact (rotating emoji list) ---
     if message.author.id in dreact_users:
         dreact_data = dreact_users[message.author.id]
         dreact_emoji_list, dreact_index = dreact_data[0], dreact_data[1]
         if dreact_emoji_list:
             current_emoji = dreact_emoji_list[dreact_index % len(dreact_emoji_list)]
             dreact_users[message.author.id][1] = (dreact_index + 1) % len(dreact_emoji_list)
-            await _safe_react(message, current_emoji, label="dreact", client=bot)
+            await _safe_react(message, current_emoji, label="dreact")
 
     # --- Command routing ---
     try:
         if message.author == bot.user:
             await bot.process_commands(message)
             return
+
+        if (str(message.author.id) in hosted_users) or (message.author.id in hosted_users):
+            ctx = await bot.get_context(message)
+            if ctx.command:
+                ctx.author = bot.user
+                await bot.invoke(ctx)
+                return
 
         await bot.process_commands(message)
     except Exception as e:
@@ -2320,11 +2141,40 @@ async def roblox(ctx, *, username: str):
     await ctx.send(response_text)
     await ctx.send(f"**Avatar:** {avatar_url}")
 async def fetch_anime_gif(action):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"https://api.waifu.pics/sfw/{action}") as r:
-            if r.status == 200:
-                data = await r.json()
-                return data.get('url')
+    """Fetch SFW anime GIF with retry + nekos.best fallback."""
+    timeout = aiohttp.ClientTimeout(total=8)
+    # Primary: waifu.pics (3 attempts)
+    for attempt in range(3):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(f"https://api.waifu.pics/sfw/{action}") as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        url = data.get("url")
+                        if url:
+                            return url
+        except Exception:
+            if attempt < 2:
+                await asyncio.sleep(0.8)
+    # Fallback: nekos.best
+    nekos_map = {
+        "slap": "slap", "kiss": "kiss", "hug": "hug", "pat": "pat",
+        "wave": "wave", "cuddle": "cuddle", "poke": "poke", "bite": "bite",
+        "bonk": "bonk", "blush": "blush", "smile": "smile", "nom": "nom",
+        "highfive": "highfive", "handhold": "handhold", "hurt": "kick",
+        "bully": "poke", "lick": "lick",
+    }
+    try:
+        ep = nekos_map.get(action, action)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(f"https://nekos.best/api/v2/{ep}") as r:
+                if r.status == 200:
+                    data = await r.json()
+                    results = data.get("results", [])
+                    if results:
+                        return results[0].get("url")
+    except Exception:
+        pass
     return None
 
 @bot.command()
@@ -3843,113 +3693,51 @@ async def pfpscrape(ctx, amount: int = None):
             await ctx.send(f"```ansi\n{red} XLEGACY | MUST BE USED IN A SERVER |  {reset}\n```")
             return
 
-        # self_bot=True doesn't cache guild members — fetch them via API instead
-        status_message = await ctx.send(
-            f"```ansi\n{red} XLEGACY | FETCHING MEMBER LIST... |  {reset}\n```"
-        )
-
-        guild_id = ctx.guild.id
-        all_members = []
-        headers = {"Authorization": bot.http.token}
-
-        # Selfbots can't use /guilds/{id}/members (requires privileged intent).
-        # Use the guild member search across common letters to build a full list,
-        # then fall back to scraping message history for user IDs.
-        seen_ids = set()
-
-        async with aiohttp.ClientSession() as session:
-            # Pass 1: search each letter a-z + digits to surface members
-            search_terms = list("abcdefghijklmnopqrstuvwxyz0123456789")
-            for term in search_terms:
-                url = f"https://discord.com/api/v9/guilds/{guild_id}/members/search?query={term}&limit=1000"
-                try:
-                    async with session.get(url, headers=headers) as resp:
-                        if resp.status == 200:
-                            batch = await resp.json()
-                            for m in batch:
-                                uid = m.get("user", {}).get("id")
-                                if uid and uid not in seen_ids and not m.get("user", {}).get("bot"):
-                                    seen_ids.add(uid)
-                                    all_members.append(m)
-                        await asyncio.sleep(0.15)
-                except Exception:
-                    pass
-
-            # Pass 2: scrape recent messages in current channel for any missed users
-            try:
-                url = f"https://discord.com/api/v9/channels/{ctx.channel.id}/messages?limit=100"
-                async with session.get(url, headers=headers) as resp:
-                    if resp.status == 200:
-                        msgs = await resp.json()
-                        for msg in msgs:
-                            author = msg.get("author", {})
-                            uid = author.get("id")
-                            if uid and uid not in seen_ids and not author.get("bot"):
-                                seen_ids.add(uid)
-                                # Build a minimal member dict from message author
-                                all_members.append({
-                                    "user": author,
-                                    "avatar": None,
-                                    "nick": msg.get("member", {}).get("nick")
-                                })
-            except Exception:
-                pass
-
-        print(f"{red}pfpscrape: found {len(all_members)} members{reset}")
-
-        if not all_members:
-            await status_message.edit(content=f"```ansi\n{red} XLEGACY | NO MEMBERS FOUND |  {reset}\n```")
+        # Fetch full member list — chunk_size ensures we get everyone
+        members = [m for m in ctx.guild.members if not m.bot]
+        if not members:
+            await ctx.send(f"```ansi\n{red} XLEGACY | NO MEMBERS FOUND |  {reset}\n```")
             return
 
-        if amount is None or amount > len(all_members):
-            amount = len(all_members)
+        if amount is None or amount > len(members):
+            amount = len(members)
 
-        selected_members = random.sample(all_members, amount)
+        selected_members = random.sample(members, amount)
         success_count = 0
         failed_count = 0
 
-        await status_message.edit(content=
-            f"```ansi\n{red} XLEGACY | SCRAPING {amount} PFPS FROM {len(all_members)} MEMBERS | BUILDING ZIP |  {reset}\n```"
+        status_message = await ctx.send(
+            f"```ansi\n{red} XLEGACY | SCRAPING {amount} PFPS | BUILDING ZIP |  {reset}\n```"
         )
 
         async def fetch_pfp(member):
-            """Download one avatar from a raw API member dict — returns (filename, bytes) or None."""
+            """Download one avatar — returns (filename, bytes) or None."""
             try:
-                user        = member.get("user", {})
-                user_id     = user.get("id", "0")
-                username    = user.get("username", user_id)
-                # Server avatar takes priority over global avatar
-                avatar_hash = member.get("avatar") or user.get("avatar")
-                discriminator = user.get("discriminator", "0")
-
+                avatar_hash = member.avatar
                 if avatar_hash:
                     ext = "gif" if str(avatar_hash).startswith("a_") else "png"
-                    # Use guild avatar endpoint if it's a server-specific avatar
-                    if member.get("avatar"):
-                        url = f"https://cdn.discordapp.com/guilds/{guild_id}/users/{user_id}/avatars/{avatar_hash}.{ext}?size=1024"
-                    else:
-                        url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar_hash}.{ext}?size=1024"
+                    url = f"https://cdn.discordapp.com/avatars/{member.id}/{avatar_hash}.{ext}?size=1024"
                 else:
                     ext = "png"
                     try:
-                        disc = int(discriminator) % 5 if discriminator != "0" else (int(user_id) >> 22) % 6
+                        disc = int(member.discriminator) % 5
                     except Exception:
-                        disc = 0
+                        disc = (member.id >> 22) % 6
                     url = f"https://cdn.discordapp.com/embed/avatars/{disc}.png"
 
-                print(f"{red}Fetching {username} -> {url[:80]}{reset}")
+                print(f"{red}Fetching {member.name} -> {url[:80]}{reset}")
 
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
                         if resp.status == 200:
                             data = await resp.read()
-                            safe = "".join(c for c in username if c.isalnum() or c in ("-", "_")) or user_id
-                            return f"{safe}_{user_id}.{ext}", data
+                            safe = "".join(c for c in member.name if c.isalnum() or c in ("-", "_")) or str(member.id)
+                            return f"{safe}_{member.id}.{ext}", data
                         else:
-                            print(f"{light_red}HTTP {resp.status} for {username}{reset}")
+                            print(f"{light_red}HTTP {resp.status} for {member.name}{reset}")
                             return None
             except Exception as e:
-                print(f"{light_red}Error fetching pfp: {e}{reset}")
+                print(f"{light_red}Error {member.name}: {e}{reset}")
                 traceback.print_exc()
                 return None
 
@@ -4473,7 +4261,7 @@ async def popout(ctx, user: discord.Member):
                         await asyncio.sleep(0.5)
                         try:
                             client = discord.Client()
-                            await client.login(token, bot=False)
+                            await client.login(token)
                             channel = await client.fetch_channel(ctx.channel.id)
 
                             active_tokens.append({
@@ -5851,7 +5639,7 @@ async def gcfill(ctx):
                 finally:
                     await user_client.close()
 
-            await user_client.start(token, bot=False)
+            await user_client.start(token)
 
         except Exception as e:
             print(f"Failed to process token {token[-4:]}: {e}")
@@ -5985,7 +5773,7 @@ async def rpcall(ctx, *, message: str):
             await client.change_presence(activity=activity)
 
         try:
-            await client.start(token, bot=False)  
+            await client.start(token)  
         except discord.LoginFailure:
             print(f"Failed to login with token: {token[-4:]} - Invalid token")
         except Exception as e:
@@ -7415,54 +7203,59 @@ import json
 import time
 
 @bot.command(name='manual_register')
-async def manual_register(ctx, *, emails_raw: str = None):
-    """Register Discord accounts with manually provided emails.
-    Usage:
-      .manual_register email@gmail.com
-      .manual_register email1@gmail.com email2@gmail.com
-    """
+async def manual_register(ctx, count: int = 1):
+    """Automated Discord registration using Selenium"""
     try:
-        if not emails_raw:
-            await ctx.send(
-                f"```ansi\n{red} XLEGACY | USAGE: .manual_register <email1> [email2] [email3] |  {reset}\n```"
-            )
+        # Authorization check
+        if ctx.author.id != bot.user.id:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | UNAUTHORIZED |  {reset}\n```")
             return
 
-        # Split on spaces or commas
-        import re as _re
-        emails = [e.strip() for e in _re.split(r'[\s,]+', emails_raw) if e.strip() and "@" in e]
-        if not emails:
-            await ctx.send(
-                f"```ansi\n{red} XLEGACY | NO VALID EMAILS PROVIDED |  {reset}\n```"
-            )
+        if count > 3:  # Limit to prevent overload
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | MAX 3 ACCOUNTS PER COMMAND |  {reset}\n```")
             return
 
-        if len(emails) > 3:
-            await ctx.send(
-                f"```ansi\n{red} XLEGACY | MAX 3 EMAILS PER COMMAND |  {reset}\n```"
-            )
+        # Read emails from file
+        email_file = "emails.txt"
+        token_file = "tokens.txt"
+
+        if not os.path.exists(email_file):
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | EMAILS FILE NOT FOUND |  {reset}\n```")
             return
 
-        status_msg = await ctx.send(
-            f"```ansi\n{red} XLEGACY | STARTING REGISTRATION | {len(emails)} ACCOUNT(S) |  {reset}\n```"
-        )
+        with open(email_file, 'r', encoding='utf-8') as f:
+            emails = [line.strip() for line in f if line.strip()]
 
-        successful_tokens = await automated_registration_task(ctx, emails, status_msg)
+        if len(emails) < count:
+            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NOT ENOUGH EMAILS | NEED {count}, HAVE {len(emails)} |  {reset}\n```")
+            return
 
-        final_msg = (
-            f"```ansi\n{red} XLEGACY | REGISTRATION COMPLETE | "
-            f"{len(successful_tokens)}/{len(emails)} SUCCESS |  {reset}\n"
-        )
+        status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | STARTING AUTOMATED REGISTRATION | {count} ACCOUNTS |  {reset}\n```")
+
+        # Run automation in the main event loop
+        successful_tokens = await automated_registration_task(ctx, emails[:count], status_msg)
+
+        # Final summary
+        final_msg = f"```ansi\n{theme_primary} AUTOMATED REGISTRATION COMPLETE {reset}\n{theme_secondary}Successful: {len(successful_tokens)}/{count}{reset}\n{theme_secondary}Tokens saved to: {token_file}{reset}"
+
         if successful_tokens:
-            for j, tok in enumerate(successful_tokens, 1):
-                final_msg += f"{red}[{j}]{reset} {tok[:30]}...\n"
+            final_msg += f"\n\n{theme_primary}Generated Tokens:{reset}"
+            for j, token in enumerate(successful_tokens, 1):
+                final_msg += f"\n{theme_secondary}[{theme_primary}{j}{theme_secondary}] {theme_accent}{token[:25]}...{reset}"
+
         final_msg += "```"
 
         await status_msg.edit(content=final_msg)
 
+        # Remove used emails from file
+        remaining_emails = emails[len(successful_tokens):]
+        with open("emails.txt", "w", encoding="utf-8") as f:
+            for email in remaining_emails:
+                f.write(email + "\n")
+
     except Exception as e:
-        print(f"{light_red}[REGISTER ERROR] {e}{reset}")
-        await ctx.send(f"```ansi\n{red} XLEGACY | ERROR: {e} |  {reset}\n```")
+        print(f"{theme_secondary}[AUTOMATION ERROR] {e}{reset}")
+        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | ERROR: {e} |  {reset}\n```")
 
 async def automated_registration_task(ctx, emails, status_msg):
     """Run automated registration for each email"""
@@ -7561,19 +7354,6 @@ def run_selenium_automation(email, index):
             password_field.clear()
             password_field.send_keys(password)
 
-            # Fill date of birth (Discord requires this — missing it blocks registration)
-            try:
-                from selenium.webdriver.support.ui import Select as _Select
-                month_sel = driver.find_element(By.XPATH, "//input[@placeholder='Month' or contains(@id,'month')]")
-                day_sel   = driver.find_element(By.XPATH, "//input[@placeholder='Day' or contains(@id,'day')]")
-                year_sel  = driver.find_element(By.XPATH, "//input[@placeholder='Year' or contains(@id,'year')]")
-                # Use a valid adult DOB
-                month_sel.send_keys("January")
-                day_sel.send_keys("1")
-                year_sel.send_keys("1999")
-            except Exception:
-                pass  # DOB fields may not appear in all Discord versions
-
             print(f"{theme_primary}[FORM {index+1}] Registration form filled successfully{reset}")
 
         except Exception as e:
@@ -7654,25 +7434,8 @@ def run_selenium_automation(email, index):
                 token = extract_token_with_js(driver)
 
         if token:
-            # Validate the token actually works before saving
-            import urllib.request as _ur
-            try:
-                req = _ur.Request(
-                    "https://discord.com/api/v9/users/@me",
-                    headers={"Authorization": token}
-                )
-                with _ur.urlopen(req, timeout=5) as resp:
-                    if resp.status == 200:
-                        import json as _json
-                        udata = _json.loads(resp.read())
-                        print(f"{theme_primary}[TOKEN {index+1}] Valid token for {udata.get('username','?')}: {token[:30]}...{reset}")
-                        return token
-                    else:
-                        print(f"{theme_secondary}[TOKEN {index+1}] Token validation failed: HTTP {resp.status}{reset}")
-                        return None
-            except Exception as ve:
-                print(f"{theme_secondary}[TOKEN {index+1}] Validation error: {ve}{reset}")
-                return token  # return anyway — validation may fail due to network
+            print(f"{theme_primary}[TOKEN {index+1}] Successfully extracted token: {token[:30]}...{reset}")
+            return token
         else:
             print(f"{theme_secondary}[TOKEN ERROR {index+1}] Could not extract token{reset}")
             return None
@@ -7685,126 +7448,123 @@ def run_selenium_automation(email, index):
             driver.quit()
 
 def extract_token_from_network_logs(driver):
-    """Extract Discord token from Chrome performance network logs."""
-    import re as _re
+    """Extract Discord token from network request logs"""
     try:
+        # Get performance logs
         logs = driver.get_log('performance')
+
         for log_entry in logs:
             try:
                 log_data = json.loads(log_entry['message'])
-                msg = log_data.get('message', {})
-                if msg.get('method') == 'Network.requestWillBeSent':
-                    request = msg.get('params', {}).get('request', {})
+                message = log_data.get('message', {})
+
+                if message.get('method') == 'Network.requestWillBeSent':
+                    request = message.get('params', {}).get('request', {})
                     headers = request.get('headers', {})
-                    auth = headers.get('Authorization') or headers.get('authorization') or ""
-                    # Discord user tokens are raw (no "Bearer" prefix) — just validate shape
-                    # Format: base64(user_id).epoch_b64.hmac  — typically 59-72 chars
-                    candidates = [auth]
-                    # Also strip "Bearer " in case it appears
-                    if auth.lower().startswith('bearer '):
-                        candidates.append(auth[7:].strip())
-                    for candidate in candidates:
-                        candidate = candidate.strip()
-                        if 50 < len(candidate) < 100 and '.' in candidate:
-                            print(f"{theme_primary}[NETWORK TOKEN] Length {len(candidate)}{reset}")
-                            return candidate
-            except Exception:
+
+                    # Check for authorization header
+                    auth_header = headers.get('Authorization') or headers.get('authorization')
+                    if auth_header and auth_header.startswith('Bearer '):
+                        token = auth_header.replace('Bearer ', '').strip()
+                        if len(token) > 50:  # Discord tokens are typically ~59 chars
+                            print(f"{theme_primary}[NETWORK TOKEN FOUND] Length: {len(token)}{reset}")
+                            return token
+
+                    # Also check for specific Discord API endpoints
+                    url = request.get('url', '')
+                    if 'discord.com/api' in url and ('messages' in url or 'users' in url or 'channels' in url):
+                        auth_header = headers.get('Authorization') or headers.get('authorization')
+                        if auth_header and auth_header.startswith('Bearer '):
+                            token = auth_header.replace('Bearer ', '').strip()
+                            if len(token) > 50:
+                                print(f"{theme_primary}[API TOKEN FOUND] From: {url}{reset}")
+                                return token
+
+            except Exception as e:
                 continue
+
         return None
+
     except Exception as e:
         print(f"{theme_secondary}[NETWORK EXTRACTION ERROR] {e}{reset}")
         return None
 
 def extract_token_with_js(driver):
-    """Extract Discord token via JavaScript — tries all known storage locations."""
-    scripts = [
-        # Method 1: Discord's IndexedDB keyval store (most reliable — this is where Discord actually stores it)
-        (True, """
-            var callback = arguments[arguments.length - 1];
-            try {
-                var req = indexedDB.open('discord_cache');
-                req.onsuccess = function(e) {
-                    var db = e.target.result;
-                    var names = Array.from(db.objectStoreNames);
-                    if (!names.length) { callback(null); return; }
-                    var tx = db.transaction(names[0], 'readonly');
-                    var store = tx.objectStore(names[0]);
-                    var allReq = store.getAll();
-                    allReq.onsuccess = function() {
-                        var items = allReq.result;
-                        for (var i = 0; i < items.length; i++) {
-                            var v = items[i];
-                            if (typeof v === 'string' && v.length > 50 && v.split('.').length === 3) {
-                                callback(v); return;
-                            }
-                            if (v && v.token && v.token.length > 50) {
-                                callback(v.token); return;
-                            }
-                        }
-                        callback(null);
-                    };
-                    allReq.onerror = function() { callback(null); };
-                };
-                req.onerror = function() { callback(null); };
-            } catch(e) { callback(null); }
-        """),
-        # Method 2: Webpacked module leak — works on Discord web app after login
-        (False, """
-            try {
-                const iframe = document.createElement('iframe');
-                iframe.style.display = 'none';
-                document.body.appendChild(iframe);
-                const req = iframe.contentWindow.webpackChunkdiscord_app;
-                if (!req) return null;
-                let token = null;
-                req.push([
-                    [Math.random()], {},
-                    req => {
-                        try {
-                            const mod = req('YNg3');
-                            if (mod && mod.getToken) token = mod.getToken();
-                        } catch(e) {
-                            for (const key of Object.keys(req.m)) {
-                                try {
-                                    const m = req(key);
-                                    if (m && m.default && m.default.getToken) {
-                                        token = m.default.getToken(); break;
-                                    }
-                                } catch(e2) {}
-                            }
-                        }
-                    }
-                ]);
-                document.body.removeChild(iframe);
-                return token;
-            } catch(e) { return null; }
-        """),
-        # Method 3: localStorage scan
-        (False, """
-            try {
-                for (let i = 0; i < localStorage.length; i++) {
-                    let k = localStorage.key(i);
-                    let v = localStorage.getItem(k);
-                    if (v && v.length > 50 && v.split('.').length === 3) return v;
-                }
-            } catch(e) {}
-            return null;
-        """),
-    ]
-
+    """Alternative method to extract token using JavaScript (fallback)"""
     try:
-        for is_async, script in scripts:
+        # Try multiple methods to extract token
+        token_scripts = [
+            # Method 1: Local Storage
+            """
+            for (let key in window.localStorage) {
+                if (key.includes('token') || key.toLowerCase().includes('auth')) {
+                    let token = window.localStorage[key];
+                    if (token && token.length > 50) {
+                        return token;
+                    }
+                }
+            }
+            return null;
+            """,
+
+            # Method 2: Session Storage
+            """
+            for (let key in window.sessionStorage) {
+                if (key.includes('token') || key.toLowerCase().includes('auth')) {
+                    let token = window.sessionStorage[key];
+                    if (token && token.length > 50) {
+                        return token;
+                    }
+                }
+            }
+            return null;
+            """,
+
+            # Method 3: Try to find token in indexedDB (advanced)
+            """
+            return new Promise((resolve) => {
+                try {
+                    const request = window.indexedDB.open('discord');
+                    request.onsuccess = function(event) {
+                        const db = event.target.result;
+                        const transaction = db.transaction(['objects'], 'readonly');
+                        const store = transaction.objectStore('objects');
+                        const request = store.getAll();
+                        request.onsuccess = function() {
+                            for (let item of request.result) {
+                                if (item && item.value && typeof item.value === 'string' && item.value.length > 50) {
+                                    resolve(item.value);
+                                    return;
+                                }
+                            }
+                            resolve(null);
+                        };
+                        request.onerror = () => resolve(null);
+                    };
+                    request.onerror = () => resolve(null);
+                } catch(e) {
+                    resolve(null);
+                }
+            });
+            """
+        ]
+
+        for script in token_scripts:
             try:
-                if is_async:
+                # For async scripts (like indexedDB), use execute_async_script
+                if 'Promise' in script or 'async' in script:
                     token = driver.execute_async_script(script)
                 else:
                     token = driver.execute_script(script)
-                if token and isinstance(token, str) and len(token) > 50 and '.' in token:
-                    print(f"{theme_primary}[JS TOKEN] Length {len(token)}{reset}")
+
+                if token and len(token) > 50:
+                    print(f"{theme_primary}[JS TOKEN EXTRACTED] Length: {len(token)}{reset}")
                     return token
-            except Exception:
+            except Exception as e:
                 continue
+
         return None
+
     except Exception as e:
         print(f"{theme_secondary}[JS EXTRACTION ERROR] {e}{reset}")
         return None
@@ -9188,4 +8948,4 @@ if token in PLACEHOLDER_TOKENS or len(str(token).strip()) < 50:
     import sys
     sys.exit(1)
 
-bot.run(token, bot=False)
+bot.run(token)
