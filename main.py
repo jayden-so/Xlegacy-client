@@ -8,6 +8,7 @@ from discord.ext import commands
 import asyncio
 import random
 import aiohttp
+import websockets
 import shutil
 from discord.ext import commands, tasks
 import sys
@@ -307,26 +308,16 @@ def make_hosted_bot(token: str, username: str):
     # We iterate bot.commands AFTER this function is called (at startup),
     # so all commands are already registered on the main bot by then.
     def _sync_commands():
-        """Clone commands from the main bot onto the hosted bot."""
         for cmd in list(bot.commands):
+            # Skip the host management commands — hosted users shouldn't manage hosting
             if cmd.name in ("host",):
                 continue
-
             try:
+                # Remove if already added to avoid duplicate errors on re-sync
                 hbot.remove_command(cmd.name)
+                hbot.add_command(cmd)
             except Exception:
                 pass
-
-            try:
-                # IMPORTANT:
-                # We MUST copy the command object.
-                # Reusing the same command instance across multiple bots
-                # causes invoke/process issues where commands only send the
-                # raw message instead of executing properly.
-                cloned = cmd.copy()
-                hbot.add_command(cloned)
-            except Exception as e:
-                print(f"{light_red}[HOST:{username}] Failed to sync command {cmd.name}: {e}{reset}")
 
     @hbot.event
     async def on_ready():
@@ -339,58 +330,47 @@ def make_hosted_bot(token: str, username: str):
 
     @hbot.event
     async def on_message(message):
+        # --- Autoreact / supereact / dreact on other users' messages ---
+        if message.author != hbot.user:
+            mid = message.author.id
+
+            if mid in autoreact_users:
+                emojis = autoreact_users[mid]
+                if isinstance(emojis, str):
+                    emojis = [emojis]
+                for emoji in emojis:
+                    await _safe_react(message, emoji, label="autoreact", client=hbot)
+                    await asyncio.sleep(0.3)
+
+            if mid in supereact_users:
+                for emoji in supereact_users[mid]:
+                    await _safe_react(message, emoji, label="supereact", client=hbot)
+                    await asyncio.sleep(0.3)
+
+            if mid in dreact_users:
+                dreact_data = dreact_users[mid]
+                emoji_list, idx = dreact_data[0], dreact_data[1]
+                if emoji_list:
+                    current_emoji = emoji_list[idx % len(emoji_list)]
+                    dreact_users[mid][1] = (idx + 1) % len(emoji_list)
+                    await _safe_react(message, current_emoji, label="dreact", client=hbot)
+            return
+
+        # --- Commands: only fire on prefix messages ---
+        if not message.content.startswith(PREFIX):
+            return
+
+        # Use hbot's own context so everything runs under the hosted account
         try:
-            # -------------------------
-            # REACTION AUTOMATION
-            # -------------------------
-            if message.author.id != hbot.user.id:
-                mid = message.author.id
-
-                if mid in autoreact_users:
-                    emojis = autoreact_users[mid]
-                    if isinstance(emojis, str):
-                        emojis = [emojis]
-
-                    for emoji in emojis:
-                        await _safe_react(message, emoji, label="autoreact", client=hbot)
-                        await asyncio.sleep(0.3)
-
-                if mid in supereact_users:
-                    for emoji in supereact_users[mid]:
-                        await _safe_react(message, emoji, label="supereact", client=hbot)
-                        await asyncio.sleep(0.3)
-
-                if mid in dreact_users:
-                    dreact_data = dreact_users[mid]
-                    emoji_list, idx = dreact_data[0], dreact_data[1]
-
-                    if emoji_list:
-                        current_emoji = emoji_list[idx % len(emoji_list)]
-                        dreact_users[mid][1] = (idx + 1) % len(emoji_list)
-
-                        await _safe_react(
-                            message,
-                            current_emoji,
-                            label="dreact",
-                            client=hbot
-                        )
-
-                return
-
-            # -------------------------
-            # COMMAND PROCESSING
-            # -------------------------
-            if not message.content.startswith(PREFIX):
-                return
-
-            print(f"{red}[HOST:{username}] Processing command: {message.content}{reset}")
-
-            # process_commands is MUCH more reliable than manually invoking
-            # shared command contexts across multiple selfbot instances
-            await hbot.process_commands(message)
-
+            ctx = await hbot.get_context(message)
+            if ctx.command:
+                print(f"{red}[HOST:{username}] {PREFIX}{ctx.command.qualified_name}{reset}")
+                await hbot.invoke(ctx)
+            else:
+                cmd_name = message.content.split()[0].lstrip(PREFIX)
+                print(f"{light_red}[HOST:{username}] Unknown command: {cmd_name}{reset}")
         except Exception as e:
-            print(f"{light_red}[HOST:{username}] on_message error: {e}{reset}")
+            print(f"{light_red}[HOST:{username}] Error: {e}{reset}")
 
     @hbot.event
     async def on_command_error(ctx, error):
@@ -1139,111 +1119,157 @@ async def tok(ctx):
         await loading_message.edit(content=f"```ansi\n{final_message}```")
 
 # Add this with your other global variables at the top
-active_clients = []
+active_clients = []  # legacy
+active_vc_connections = {}  # channel_id -> [asyncio.Task, ...]
 
 @bot.command()
 async def multivc(ctx, channel_id: int):
-    """Connect multiple tokens to a voice channel"""
+    """Connect all tokens in token.txt to a VC using raw websockets (24/7, no PyNaCl needed)."""
+    global active_vc_connections
     tokens = load_tokens()
 
     if not tokens:
-        await ctx.send("```No tokens found in token.txt```")
+        await ctx.send(f"```ansi\n{red} XLEGACY | NO TOKENS IN token.txt |  {reset}\n```")
         return
 
-    async def connect_voice(token):
-        try:
-            intents = discord.Intents.default()
-            intents.voice_states = True
-            client = commands.Bot(command_prefix='.', self_bot=True, intents=intents)
+    # Resolve guild_id from the channel using the main bot
+    guild_id = None
+    for guild in bot.guilds:
+        ch = guild.get_channel(channel_id)
+        if ch:
+            guild_id = guild.id
+            break
 
-            @client.event
-            async def on_ready():
+    if not guild_id:
+        await ctx.send(f"```ansi\n{red} XLEGACY | CHANNEL NOT FOUND | {channel_id} |  {reset}\n```")
+        return
+
+    status_msg = await ctx.send(
+        f"```ansi\n{red} XLEGACY | CONNECTING {len(tokens)} TOKENS TO VC {channel_id} |  {reset}\n```"
+    )
+
+    async def voicecord_session(token):
+        """Raw websocket VC session — mirrors Voicecord's approach for 24/7 stability."""
+        uri = "wss://gateway.discord.gg/?v=10&encoding=json"
+        tok_preview = token[-4:]
+
+        async def heartbeat(ws, interval):
+            while True:
+                await asyncio.sleep(interval / 1000)
                 try:
-                    channel = client.get_channel(channel_id)
-                    if channel and isinstance(channel, discord.VoiceChannel):
-                        voice = await channel.connect()
-                        active_clients.append(client)
-                        print(f"{red}Connected to voice with token ending in {token[-4:]}{reset}")
-                    else:
-                        print(f"{light_red}Voice channel not found for token ending in {token[-4:]}{reset}")
-                except Exception as e:
-                    print(f"{light_red}Error connecting token {token[-4:]}: {e}{reset}")
+                    await ws.send(json.dumps({"op": 1, "d": None}))
+                except Exception:
+                    break
 
-            await client.start(token, bot=False)
+        while True:  # outer loop = auto-reconnect forever
+            try:
+                async with websockets.connect(uri, max_size=10 * 1024 * 1024) as ws:
+                    hello = json.loads(await ws.recv())
+                    interval = hello["d"]["heartbeat_interval"]
+                    asyncio.create_task(heartbeat(ws, interval))
 
-        except Exception as e:
-            print(f"{light_red}Error with token {token[-4:]}: {e}{reset}")
+                    # Identify as user
+                    await ws.send(json.dumps({
+                        "op": 2,
+                        "d": {
+                            "token": token,
+                            "properties": {"$os": "windows", "$browser": "chrome", "$device": "pc"},
+                            "presence": {"status": "online", "afk": False}
+                        }
+                    }))
 
-    tasks = [connect_voice(token) for token in tokens]
-    status_msg = await ctx.send(f"```ansi\n{red}Connecting {len(tasks)} tokens to voice channel {channel_id}```")
-    await asyncio.gather(*tasks, return_exceptions=True)
+                    # Wait for READY
+                    while True:
+                        event = json.loads(await ws.recv())
+                        if event.get("t") == "READY":
+                            break
 
-    # Update status message
-    await status_msg.edit(content=f"```ansi\n{red}Successfully connected {len(tokens)} tokens to voice channel {channel_id}```")
+                    # Join the voice channel (opcode 4)
+                    await ws.send(json.dumps({
+                        "op": 4,
+                        "d": {
+                            "guild_id": str(guild_id),
+                            "channel_id": str(channel_id),
+                            "self_mute": False,
+                            "self_deaf": True
+                        }
+                    }))
+
+                    print(f"{red}[MULTIVC] Token ...{tok_preview} connected to VC {channel_id}{reset}")
+
+                    # Keep alive — read messages and stay in VC forever
+                    while True:
+                        try:
+                            await asyncio.wait_for(ws.recv(), timeout=45)
+                        except asyncio.TimeoutError:
+                            # Send heartbeat manually to keep connection alive
+                            await ws.send(json.dumps({"op": 1, "d": None}))
+                        except Exception:
+                            break  # triggers reconnect
+
+            except asyncio.CancelledError:
+                print(f"{red}[MULTIVC] Token ...{tok_preview} disconnected{reset}")
+                return  # vcend cancelled us — stop reconnecting
+            except Exception as e:
+                print(f"{light_red}[MULTIVC] Token ...{tok_preview} error: {e} — reconnecting in 5s{reset}")
+                await asyncio.sleep(5)
+
+    # Cancel any existing sessions for this channel before starting new ones
+    if channel_id in active_vc_connections:
+        for task in active_vc_connections[channel_id]:
+            task.cancel()
+
+    tasks = [asyncio.create_task(voicecord_session(t)) for t in tokens]
+    active_vc_connections[channel_id] = tasks
+
+    await status_msg.edit(content=(
+        f"```ansi\n{red} XLEGACY | MULTIVC ACTIVE | {len(tokens)} TOKENS | VC {channel_id} | 24/7 AUTO-RECONNECT |  {reset}\n```"
+    ))
+    print(f"{red}[MULTIVC] {len(tokens)} tokens connected to VC {channel_id}{reset}")
 
 @bot.command()
-async def vcend(ctx, channel_id: int):
-    """Disconnect multiple tokens from a voice channel"""
-    tokens = load_tokens()
+async def vcend(ctx, channel_id: int = None):
+    """Disconnect tokens from a VC. Omit channel_id to end all VCs."""
+    global active_vc_connections
 
-    if not tokens:
-        await ctx.send("```No tokens found in token.txt```")
+    if not active_vc_connections:
+        await ctx.send(f"```ansi\n{red} XLEGACY | NO ACTIVE VC CONNECTIONS |  {reset}\n```")
         return
 
-    async def disconnect_voice(token):
-        try:
-            intents = discord.Intents.default()
-            intents.voice_states = True
-            client = commands.Bot(command_prefix='.', self_bot=True, intents=intents)
+    if channel_id:
+        targets = {channel_id: active_vc_connections.pop(channel_id, [])}
+    else:
+        targets = dict(active_vc_connections)
+        active_vc_connections.clear()
 
-            @client.event
-            async def on_ready():
-                try:
-                    channel = client.get_channel(channel_id)
-                    if channel:
-                        for vc in client.voice_clients:
-                            if vc.channel and vc.channel.id == channel_id:
-                                await vc.disconnect()
-                                print(f"{red}Disconnected token ending in {token[-4:]}{reset}")
-                    else:
-                        print(f"{light_red}Voice channel not found for token ending in {token[-4:]}{reset}")
-                except Exception as e:
-                    print(f"{light_red}Error disconnecting token {token[-4:]}: {e}{reset}")
-                finally:
-                    await client.close()
+    total = 0
+    for cid, tasks in targets.items():
+        for task in tasks:
+            task.cancel()
+        total += len(tasks)
+        print(f"{red}[MULTIVC] Ended {len(tasks)} connections for VC {cid}{reset}")
 
-            await client.start(token, bot=False)
-
-        except Exception as e:
-            print(f"{light_red}Error with token {token[-4:]}: {e}{reset}")
-
-    tasks = [disconnect_voice(token) for token in tokens]
-    status_msg = await ctx.send(f"```ansi\n{red}Disconnecting {len(tasks)} tokens from voice channel {channel_id}```")
-    await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Update status message
-    await status_msg.edit(content=f"```ansi\n{red}Successfully disconnected {len(tokens)} tokens from voice channel {channel_id}```")
+    await ctx.send(
+        f"```ansi\n{red} XLEGACY | VCEND | DISCONNECTED {total} TOKENS |  {reset}\n```"
+    )
 
 @bot.command()
 async def vcstop(ctx):
-    """Stop all voice connections for all tokens"""
-    global active_clients
+    """Stop ALL active VC connections across all channels."""
+    global active_vc_connections
 
-    if not active_clients:
-        await ctx.send("```No active voice connections found```")
+    if not active_vc_connections:
+        await ctx.send(f"```ansi\n{red} XLEGACY | NO ACTIVE VC CONNECTIONS |  {reset}\n```")
         return
 
-    disconnected_count = 0
-    for client in active_clients:
-        try:
-            for voice_client in client.voice_clients:
-                await voice_client.disconnect()
-                disconnected_count += 1
-        except Exception as e:
-            print(f"{light_red}Error disconnecting client: {e}{reset}")
+    total = sum(len(t) for t in active_vc_connections.values())
+    for tasks in active_vc_connections.values():
+        for task in tasks:
+            task.cancel()
+    active_vc_connections.clear()
 
-    active_clients.clear()
-    await ctx.send(f"```ansi\n{red}Disconnected {disconnected_count} voice clients```")
+    await ctx.send(f"```ansi\n{red} XLEGACY | VCSTOP | DISCONNECTED {total} TOKENS |  {reset}\n```")
+    print(f"{red}[MULTIVC] All VC connections stopped{reset}")
 
 
 
@@ -3817,51 +3843,113 @@ async def pfpscrape(ctx, amount: int = None):
             await ctx.send(f"```ansi\n{red} XLEGACY | MUST BE USED IN A SERVER |  {reset}\n```")
             return
 
-        # Fetch full member list — chunk_size ensures we get everyone
-        members = [m for m in ctx.guild.members if not m.bot]
-        if not members:
-            await ctx.send(f"```ansi\n{red} XLEGACY | NO MEMBERS FOUND |  {reset}\n```")
+        # self_bot=True doesn't cache guild members — fetch them via API instead
+        status_message = await ctx.send(
+            f"```ansi\n{red} XLEGACY | FETCHING MEMBER LIST... |  {reset}\n```"
+        )
+
+        guild_id = ctx.guild.id
+        all_members = []
+        headers = {"Authorization": bot.http.token}
+
+        # Selfbots can't use /guilds/{id}/members (requires privileged intent).
+        # Use the guild member search across common letters to build a full list,
+        # then fall back to scraping message history for user IDs.
+        seen_ids = set()
+
+        async with aiohttp.ClientSession() as session:
+            # Pass 1: search each letter a-z + digits to surface members
+            search_terms = list("abcdefghijklmnopqrstuvwxyz0123456789")
+            for term in search_terms:
+                url = f"https://discord.com/api/v9/guilds/{guild_id}/members/search?query={term}&limit=1000"
+                try:
+                    async with session.get(url, headers=headers) as resp:
+                        if resp.status == 200:
+                            batch = await resp.json()
+                            for m in batch:
+                                uid = m.get("user", {}).get("id")
+                                if uid and uid not in seen_ids and not m.get("user", {}).get("bot"):
+                                    seen_ids.add(uid)
+                                    all_members.append(m)
+                        await asyncio.sleep(0.15)
+                except Exception:
+                    pass
+
+            # Pass 2: scrape recent messages in current channel for any missed users
+            try:
+                url = f"https://discord.com/api/v9/channels/{ctx.channel.id}/messages?limit=100"
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        msgs = await resp.json()
+                        for msg in msgs:
+                            author = msg.get("author", {})
+                            uid = author.get("id")
+                            if uid and uid not in seen_ids and not author.get("bot"):
+                                seen_ids.add(uid)
+                                # Build a minimal member dict from message author
+                                all_members.append({
+                                    "user": author,
+                                    "avatar": None,
+                                    "nick": msg.get("member", {}).get("nick")
+                                })
+            except Exception:
+                pass
+
+        print(f"{red}pfpscrape: found {len(all_members)} members{reset}")
+
+        if not all_members:
+            await status_message.edit(content=f"```ansi\n{red} XLEGACY | NO MEMBERS FOUND |  {reset}\n```")
             return
 
-        if amount is None or amount > len(members):
-            amount = len(members)
+        if amount is None or amount > len(all_members):
+            amount = len(all_members)
 
-        selected_members = random.sample(members, amount)
+        selected_members = random.sample(all_members, amount)
         success_count = 0
         failed_count = 0
 
-        status_message = await ctx.send(
-            f"```ansi\n{red} XLEGACY | SCRAPING {amount} PFPS | BUILDING ZIP |  {reset}\n```"
+        await status_message.edit(content=
+            f"```ansi\n{red} XLEGACY | SCRAPING {amount} PFPS FROM {len(all_members)} MEMBERS | BUILDING ZIP |  {reset}\n```"
         )
 
         async def fetch_pfp(member):
-            """Download one avatar — returns (filename, bytes) or None."""
+            """Download one avatar from a raw API member dict — returns (filename, bytes) or None."""
             try:
-                avatar_hash = member.avatar
+                user        = member.get("user", {})
+                user_id     = user.get("id", "0")
+                username    = user.get("username", user_id)
+                # Server avatar takes priority over global avatar
+                avatar_hash = member.get("avatar") or user.get("avatar")
+                discriminator = user.get("discriminator", "0")
+
                 if avatar_hash:
                     ext = "gif" if str(avatar_hash).startswith("a_") else "png"
-                    url = f"https://cdn.discordapp.com/avatars/{member.id}/{avatar_hash}.{ext}?size=1024"
+                    # Use guild avatar endpoint if it's a server-specific avatar
+                    if member.get("avatar"):
+                        url = f"https://cdn.discordapp.com/guilds/{guild_id}/users/{user_id}/avatars/{avatar_hash}.{ext}?size=1024"
+                    else:
+                        url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar_hash}.{ext}?size=1024"
                 else:
                     ext = "png"
                     try:
-                        disc = int(member.discriminator) % 5
+                        disc = int(discriminator) % 5 if discriminator != "0" else (int(user_id) >> 22) % 6
                     except Exception:
-                        disc = (member.id >> 22) % 6
+                        disc = 0
                     url = f"https://cdn.discordapp.com/embed/avatars/{disc}.png"
 
-                print(f"{red}Fetching {member.name} -> {url[:80]}{reset}")
+                print(f"{red}Fetching {username} -> {url[:80]}{reset}")
 
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
                         if resp.status == 200:
                             data = await resp.read()
-                            safe = "".join(c for c in member.name if c.isalnum() or c in ("-", "_")) or str(member.id)
-                            return f"{safe}_{member.id}.{ext}", data
+                            safe = "".join(c for c in username if c.isalnum() or c in ("-", "_")) or user_id
+                            return f"{safe}_{user_id}.{ext}", data
                         else:
-                            print(f"{light_red}HTTP {resp.status} for {member.name}{reset}")
+                            print(f"{light_red}HTTP {resp.status} for {username}{reset}")
                             return None
             except Exception as e:
-                print(f"{light_red}Error {member.name}: {e}{reset}")
+                print(f"{light_red}Error fetching pfp: {e}{reset}")
                 traceback.print_exc()
                 return None
 
@@ -7327,59 +7415,54 @@ import json
 import time
 
 @bot.command(name='manual_register')
-async def manual_register(ctx, count: int = 1):
-    """Automated Discord registration using Selenium"""
+async def manual_register(ctx, *, emails_raw: str = None):
+    """Register Discord accounts with manually provided emails.
+    Usage:
+      .manual_register email@gmail.com
+      .manual_register email1@gmail.com email2@gmail.com
+    """
     try:
-        # Authorization check
-        if ctx.author.id != bot.user.id:
-            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | UNAUTHORIZED |  {reset}\n```")
+        if not emails_raw:
+            await ctx.send(
+                f"```ansi\n{red} XLEGACY | USAGE: .manual_register <email1> [email2] [email3] |  {reset}\n```"
+            )
             return
 
-        if count > 3:  # Limit to prevent overload
-            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | MAX 3 ACCOUNTS PER COMMAND |  {reset}\n```")
+        # Split on spaces or commas
+        import re as _re
+        emails = [e.strip() for e in _re.split(r'[\s,]+', emails_raw) if e.strip() and "@" in e]
+        if not emails:
+            await ctx.send(
+                f"```ansi\n{red} XLEGACY | NO VALID EMAILS PROVIDED |  {reset}\n```"
+            )
             return
 
-        # Read emails from file
-        email_file = "emails.txt"
-        token_file = "tokens.txt"
-
-        if not os.path.exists(email_file):
-            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | EMAILS FILE NOT FOUND |  {reset}\n```")
+        if len(emails) > 3:
+            await ctx.send(
+                f"```ansi\n{red} XLEGACY | MAX 3 EMAILS PER COMMAND |  {reset}\n```"
+            )
             return
 
-        with open(email_file, 'r', encoding='utf-8') as f:
-            emails = [line.strip() for line in f if line.strip()]
+        status_msg = await ctx.send(
+            f"```ansi\n{red} XLEGACY | STARTING REGISTRATION | {len(emails)} ACCOUNT(S) |  {reset}\n```"
+        )
 
-        if len(emails) < count:
-            await ctx.send(f"```ansi\n{theme_primary} XLEGACY | NOT ENOUGH EMAILS | NEED {count}, HAVE {len(emails)} |  {reset}\n```")
-            return
+        successful_tokens = await automated_registration_task(ctx, emails, status_msg)
 
-        status_msg = await ctx.send(f"```ansi\n{theme_primary} XLEGACY | STARTING AUTOMATED REGISTRATION | {count} ACCOUNTS |  {reset}\n```")
-
-        # Run automation in the main event loop
-        successful_tokens = await automated_registration_task(ctx, emails[:count], status_msg)
-
-        # Final summary
-        final_msg = f"```ansi\n{theme_primary} AUTOMATED REGISTRATION COMPLETE {reset}\n{theme_secondary}Successful: {len(successful_tokens)}/{count}{reset}\n{theme_secondary}Tokens saved to: {token_file}{reset}"
-
+        final_msg = (
+            f"```ansi\n{red} XLEGACY | REGISTRATION COMPLETE | "
+            f"{len(successful_tokens)}/{len(emails)} SUCCESS |  {reset}\n"
+        )
         if successful_tokens:
-            final_msg += f"\n\n{theme_primary}Generated Tokens:{reset}"
-            for j, token in enumerate(successful_tokens, 1):
-                final_msg += f"\n{theme_secondary}[{theme_primary}{j}{theme_secondary}] {theme_accent}{token[:25]}...{reset}"
-
+            for j, tok in enumerate(successful_tokens, 1):
+                final_msg += f"{red}[{j}]{reset} {tok[:30]}...\n"
         final_msg += "```"
 
         await status_msg.edit(content=final_msg)
 
-        # Remove used emails from file
-        remaining_emails = emails[len(successful_tokens):]
-        with open("emails.txt", "w", encoding="utf-8") as f:
-            for email in remaining_emails:
-                f.write(email + "\n")
-
     except Exception as e:
-        print(f"{theme_secondary}[AUTOMATION ERROR] {e}{reset}")
-        await ctx.send(f"```ansi\n{theme_primary} XLEGACY | ERROR: {e} |  {reset}\n```")
+        print(f"{light_red}[REGISTER ERROR] {e}{reset}")
+        await ctx.send(f"```ansi\n{red} XLEGACY | ERROR: {e} |  {reset}\n```")
 
 async def automated_registration_task(ctx, emails, status_msg):
     """Run automated registration for each email"""
@@ -7478,6 +7561,19 @@ def run_selenium_automation(email, index):
             password_field.clear()
             password_field.send_keys(password)
 
+            # Fill date of birth (Discord requires this — missing it blocks registration)
+            try:
+                from selenium.webdriver.support.ui import Select as _Select
+                month_sel = driver.find_element(By.XPATH, "//input[@placeholder='Month' or contains(@id,'month')]")
+                day_sel   = driver.find_element(By.XPATH, "//input[@placeholder='Day' or contains(@id,'day')]")
+                year_sel  = driver.find_element(By.XPATH, "//input[@placeholder='Year' or contains(@id,'year')]")
+                # Use a valid adult DOB
+                month_sel.send_keys("January")
+                day_sel.send_keys("1")
+                year_sel.send_keys("1999")
+            except Exception:
+                pass  # DOB fields may not appear in all Discord versions
+
             print(f"{theme_primary}[FORM {index+1}] Registration form filled successfully{reset}")
 
         except Exception as e:
@@ -7558,8 +7654,25 @@ def run_selenium_automation(email, index):
                 token = extract_token_with_js(driver)
 
         if token:
-            print(f"{theme_primary}[TOKEN {index+1}] Successfully extracted token: {token[:30]}...{reset}")
-            return token
+            # Validate the token actually works before saving
+            import urllib.request as _ur
+            try:
+                req = _ur.Request(
+                    "https://discord.com/api/v9/users/@me",
+                    headers={"Authorization": token}
+                )
+                with _ur.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        import json as _json
+                        udata = _json.loads(resp.read())
+                        print(f"{theme_primary}[TOKEN {index+1}] Valid token for {udata.get('username','?')}: {token[:30]}...{reset}")
+                        return token
+                    else:
+                        print(f"{theme_secondary}[TOKEN {index+1}] Token validation failed: HTTP {resp.status}{reset}")
+                        return None
+            except Exception as ve:
+                print(f"{theme_secondary}[TOKEN {index+1}] Validation error: {ve}{reset}")
+                return token  # return anyway — validation may fail due to network
         else:
             print(f"{theme_secondary}[TOKEN ERROR {index+1}] Could not extract token{reset}")
             return None
@@ -7572,123 +7685,126 @@ def run_selenium_automation(email, index):
             driver.quit()
 
 def extract_token_from_network_logs(driver):
-    """Extract Discord token from network request logs"""
+    """Extract Discord token from Chrome performance network logs."""
+    import re as _re
     try:
-        # Get performance logs
         logs = driver.get_log('performance')
-
         for log_entry in logs:
             try:
                 log_data = json.loads(log_entry['message'])
-                message = log_data.get('message', {})
-
-                if message.get('method') == 'Network.requestWillBeSent':
-                    request = message.get('params', {}).get('request', {})
+                msg = log_data.get('message', {})
+                if msg.get('method') == 'Network.requestWillBeSent':
+                    request = msg.get('params', {}).get('request', {})
                     headers = request.get('headers', {})
-
-                    # Check for authorization header
-                    auth_header = headers.get('Authorization') or headers.get('authorization')
-                    if auth_header and auth_header.startswith('Bearer '):
-                        token = auth_header.replace('Bearer ', '').strip()
-                        if len(token) > 50:  # Discord tokens are typically ~59 chars
-                            print(f"{theme_primary}[NETWORK TOKEN FOUND] Length: {len(token)}{reset}")
-                            return token
-
-                    # Also check for specific Discord API endpoints
-                    url = request.get('url', '')
-                    if 'discord.com/api' in url and ('messages' in url or 'users' in url or 'channels' in url):
-                        auth_header = headers.get('Authorization') or headers.get('authorization')
-                        if auth_header and auth_header.startswith('Bearer '):
-                            token = auth_header.replace('Bearer ', '').strip()
-                            if len(token) > 50:
-                                print(f"{theme_primary}[API TOKEN FOUND] From: {url}{reset}")
-                                return token
-
-            except Exception as e:
+                    auth = headers.get('Authorization') or headers.get('authorization') or ""
+                    # Discord user tokens are raw (no "Bearer" prefix) — just validate shape
+                    # Format: base64(user_id).epoch_b64.hmac  — typically 59-72 chars
+                    candidates = [auth]
+                    # Also strip "Bearer " in case it appears
+                    if auth.lower().startswith('bearer '):
+                        candidates.append(auth[7:].strip())
+                    for candidate in candidates:
+                        candidate = candidate.strip()
+                        if 50 < len(candidate) < 100 and '.' in candidate:
+                            print(f"{theme_primary}[NETWORK TOKEN] Length {len(candidate)}{reset}")
+                            return candidate
+            except Exception:
                 continue
-
         return None
-
     except Exception as e:
         print(f"{theme_secondary}[NETWORK EXTRACTION ERROR] {e}{reset}")
         return None
 
 def extract_token_with_js(driver):
-    """Alternative method to extract token using JavaScript (fallback)"""
-    try:
-        # Try multiple methods to extract token
-        token_scripts = [
-            # Method 1: Local Storage
-            """
-            for (let key in window.localStorage) {
-                if (key.includes('token') || key.toLowerCase().includes('auth')) {
-                    let token = window.localStorage[key];
-                    if (token && token.length > 50) {
-                        return token;
-                    }
-                }
-            }
-            return null;
-            """,
-
-            # Method 2: Session Storage
-            """
-            for (let key in window.sessionStorage) {
-                if (key.includes('token') || key.toLowerCase().includes('auth')) {
-                    let token = window.sessionStorage[key];
-                    if (token && token.length > 50) {
-                        return token;
-                    }
-                }
-            }
-            return null;
-            """,
-
-            # Method 3: Try to find token in indexedDB (advanced)
-            """
-            return new Promise((resolve) => {
-                try {
-                    const request = window.indexedDB.open('discord');
-                    request.onsuccess = function(event) {
-                        const db = event.target.result;
-                        const transaction = db.transaction(['objects'], 'readonly');
-                        const store = transaction.objectStore('objects');
-                        const request = store.getAll();
-                        request.onsuccess = function() {
-                            for (let item of request.result) {
-                                if (item && item.value && typeof item.value === 'string' && item.value.length > 50) {
-                                    resolve(item.value);
-                                    return;
-                                }
+    """Extract Discord token via JavaScript — tries all known storage locations."""
+    scripts = [
+        # Method 1: Discord's IndexedDB keyval store (most reliable — this is where Discord actually stores it)
+        (True, """
+            var callback = arguments[arguments.length - 1];
+            try {
+                var req = indexedDB.open('discord_cache');
+                req.onsuccess = function(e) {
+                    var db = e.target.result;
+                    var names = Array.from(db.objectStoreNames);
+                    if (!names.length) { callback(null); return; }
+                    var tx = db.transaction(names[0], 'readonly');
+                    var store = tx.objectStore(names[0]);
+                    var allReq = store.getAll();
+                    allReq.onsuccess = function() {
+                        var items = allReq.result;
+                        for (var i = 0; i < items.length; i++) {
+                            var v = items[i];
+                            if (typeof v === 'string' && v.length > 50 && v.split('.').length === 3) {
+                                callback(v); return;
                             }
-                            resolve(null);
-                        };
-                        request.onerror = () => resolve(null);
+                            if (v && v.token && v.token.length > 50) {
+                                callback(v.token); return;
+                            }
+                        }
+                        callback(null);
                     };
-                    request.onerror = () => resolve(null);
-                } catch(e) {
-                    resolve(null);
+                    allReq.onerror = function() { callback(null); };
+                };
+                req.onerror = function() { callback(null); };
+            } catch(e) { callback(null); }
+        """),
+        # Method 2: Webpacked module leak — works on Discord web app after login
+        (False, """
+            try {
+                const iframe = document.createElement('iframe');
+                iframe.style.display = 'none';
+                document.body.appendChild(iframe);
+                const req = iframe.contentWindow.webpackChunkdiscord_app;
+                if (!req) return null;
+                let token = null;
+                req.push([
+                    [Math.random()], {},
+                    req => {
+                        try {
+                            const mod = req('YNg3');
+                            if (mod && mod.getToken) token = mod.getToken();
+                        } catch(e) {
+                            for (const key of Object.keys(req.m)) {
+                                try {
+                                    const m = req(key);
+                                    if (m && m.default && m.default.getToken) {
+                                        token = m.default.getToken(); break;
+                                    }
+                                } catch(e2) {}
+                            }
+                        }
+                    }
+                ]);
+                document.body.removeChild(iframe);
+                return token;
+            } catch(e) { return null; }
+        """),
+        # Method 3: localStorage scan
+        (False, """
+            try {
+                for (let i = 0; i < localStorage.length; i++) {
+                    let k = localStorage.key(i);
+                    let v = localStorage.getItem(k);
+                    if (v && v.length > 50 && v.split('.').length === 3) return v;
                 }
-            });
-            """
-        ]
+            } catch(e) {}
+            return null;
+        """),
+    ]
 
-        for script in token_scripts:
+    try:
+        for is_async, script in scripts:
             try:
-                # For async scripts (like indexedDB), use execute_async_script
-                if 'Promise' in script or 'async' in script:
+                if is_async:
                     token = driver.execute_async_script(script)
                 else:
                     token = driver.execute_script(script)
-
-                if token and len(token) > 50:
-                    print(f"{theme_primary}[JS TOKEN EXTRACTED] Length: {len(token)}{reset}")
+                if token and isinstance(token, str) and len(token) > 50 and '.' in token:
+                    print(f"{theme_primary}[JS TOKEN] Length {len(token)}{reset}")
                     return token
-            except Exception as e:
+            except Exception:
                 continue
-
         return None
-
     except Exception as e:
         print(f"{theme_secondary}[JS EXTRACTION ERROR] {e}{reset}")
         return None
@@ -9072,4 +9188,4 @@ if token in PLACEHOLDER_TOKENS or len(str(token).strip()) < 50:
     import sys
     sys.exit(1)
 
-bot.run(token, bot=False)  
+bot.run(token, bot=False)
